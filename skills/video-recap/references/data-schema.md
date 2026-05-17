@@ -63,7 +63,7 @@ Agent 撰写的解说词（字段详见 `agent-mode-workflow.md`）：
 
 ## background_research.json
 
-可选的背景调研结果（由 browser-cdp skill 产出）：
+可选的背景调研结果（由 Agent 使用任意可用搜索/浏览方式整理）：
 
 ```json
 {

@@ -2,3 +2,8 @@ __pycache__/
 .omc/
 *.pyc
 .DS_Store
+.pytest_cache/
+.ruff_cache/
+.omx/
+prd.json
+progress.txt

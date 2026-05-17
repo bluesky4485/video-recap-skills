@@ -1,12 +1,11 @@
 ---
 name: video-recap
 description: >
- Generate Chinese voiceover / narration / recap videos from any input video.
+ Generate Chinese voiceover / narration / recap videos from an input video.
  Use when the user provides a video file (.mp4 / .mov / .mkv / .webm) and asks
  to add narration, generate voiceover, dub, summarize, or produce a recap.
  Supports: 短剧 / 电视剧 / 电影 / 纪录片 / 科普视频.
- The narration script is written by the agent (you), not by an LLM API call.
- Pipeline: scene detection → VLM analysis → ASR → narration (you write it) →
+ Pipeline: scene detection → VLM analysis → ASR → agent writes narration.json →
  TTS → assembly.
  触发词: 视频解说, 视频旁白, 生成解说, 视频recap, video recap, voiceover,
  narration, auto-dub, recap.
@@ -28,7 +27,8 @@ description: >
 ```bash
 brew install ffmpeg && pip3 install edge-tts
 export OPENAI_API_KEY=***
-# 可选：OPENAI_API_URL / OPENAI_MODEL
+export OPENAI_MODEL=doubao-seed-2-0-lite-260428
+# 可选：OPENAI_API_URL
 ```
 
 推荐安装方式：
@@ -40,37 +40,39 @@ ln -s /tmp/video-recap-repo/skills/video-recap ~/.claude/skills/video-recap
 
 ## 使用流程
 
-> 解说词必须由 Agent 亲自撰写，**禁止**调用 LLM API 自动生成。
-> 命令必须带 `--agent-mode`。
-
-### 1. 跑前置 pipeline（在 Step 5 前自动暂停）
+### 1. 运行前置分析（自动暂停）
 
 ```bash
-python3 scripts/video_recap.py <video> --agent-mode --tts edge-tts --context "背景"
+python3 scripts/video_recap.py <video> --tts edge-tts --context "背景"
 ```
 
 ### 2. 撰写解说词
 
-读 vlm_analysis / asr_result / silence_periods，写 `work_dir/narration.json`。
-字段格式与铁律见 `agent-mode-workflow.md`。
+读取 `work_dir/agent_narration_brief.md` 以及 vlm_analysis / asr_result / silence_periods，写 `work_dir/narration.json`。
+字段格式与写作规则见 `agent-mode-workflow.md`。
 
 ### 3. （可选）背景调研
 
-调用 browser-cdp skill，写 `work_dir/background_research.json`。
+使用任意可用搜索/浏览方式调研，写 `work_dir/background_research.json`；没有工具就跳过。
 
 ### 4. 继续 TTS + 组装
 
 ```bash
-touch work_dir/.step_script.done
-rm -rf work_dir/tts_segments/ work_dir/.step_tts.done \
-  work_dir/.step_assemble.done work_dir/tts_meta.json
 python3 scripts/video_recap.py <video> --resume work_dir
 ```
 
-⚠️ 改完 narration.json 必须删 tts_segments/，否则复用旧音频。
+⚠️ 改完 narration.json 后如需重配音，删 `tts_segments/`、`.step_tts.done`、`.step_assemble.done` 和 `tts_meta.json`。
+
+## 自检
+
+```bash
+python3 scripts/video_recap.py --doctor
+```
 
 ## 输出
 
 - `recap_<video>.mp4` — 最终视频
 - `subtitles.srt` — 字幕
+- `work_dir/agent_narration_brief.md` — 解说词写作 brief
+- `work_dir/narration.json` — Agent 写的解说词
 - `work_dir/` — 所有中间 JSON

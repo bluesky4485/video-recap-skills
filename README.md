@@ -1,100 +1,125 @@
 # video-recap
 
-视频自动解说 skill。输入一个视频，输出带中文旁白的解说视频。适配 Claude Code。
+[中文说明](README.zh-CN.md) · English
 
-## 流程总览
+> A Claude Code skill for turning videos into Chinese narrated recap videos — with scene analysis, agent-written narration, TTS voiceover, subtitles, and dynamic audio mixing.
 
-```mermaid
-flowchart LR
-    A["🎬 输入视频"] --> B["前置分析"]
-    B --> C["Agent 写解说词 ★"]
-    C --> D["TTS + 动态混音"]
-    D --> E["🎬 解说视频"]
-```
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-purple)
+![TTS](https://img.shields.io/badge/TTS-edge--tts-green)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 
-## 效果预览
+## Demo
 
 https://github.com/user-attachments/assets/92698ec6-0d23-4f9f-8825-c3684ef57aff
 
-## 安装
+## What is it?
 
-**方式一** 直接告诉 Claude Code：
+`video-recap` is a Claude Code skill that helps an agent create short-form Chinese recap videos from existing video files.
 
+```mermaid
+flowchart LR
+    A[Input video] --> B[Scene detection]
+    B --> C[VLM / ASR analysis]
+    C --> D[Agent writes narration.json]
+    D --> E[edge-tts voiceover]
+    E --> F[Subtitles + audio ducking]
+    F --> G[Recap video]
 ```
-安装这个 skill https://github.com/worldwonderer/video-recap
+
+## Why use it?
+
+- **Agent-written narration** — the agent reads visual/ASR artifacts and writes the script with story intent.
+- **Default Chinese voiceover** — prefers `edge-tts` with the default voice `zh-CN-YunxiNeural`.
+- **Scene-aware analysis** — uses ffmpeg scene detection plus VLM descriptions and frame facts.
+- **Original audio preserved** — narration is mixed over source audio with ducking instead of replacing everything.
+- **Resumable workflow** — intermediate artifacts are saved so you can revise narration without starting over.
+- **OpenAI-compatible VLM endpoint** — works with compatible providers through `OPENAI_API_URL`.
+
+## Installation
+
+### 1. Install the Claude Code skill
+
+Ask Claude Code:
+
+```text
+Install this skill: https://github.com/worldwonderer/video-recap
 ```
 
-**方式二** 命令行（推荐软链）：
-
-```bash
-git clone https://github.com/worldwonderer/video-recap.git /tmp/video-recap-repo
-ln -s /tmp/video-recap-repo/skills/video-recap ~/.claude/skills/video-recap
-```
-
-安装系统依赖：
+### 2. Install runtime dependencies
 
 ```bash
 brew install ffmpeg
 pip3 install edge-tts
 ```
 
-配置 VLM API Key（用于画面分析，兼容 OpenAI 格式）：
+### 3. Configure an OpenAI-compatible API
 
 ```bash
 export OPENAI_API_KEY=your-key
-export OPENAI_API_URL=https://your-proxy/v1  # 可选，也可填完整 /chat/completions
-export OPENAI_MODEL=doubao-seed-2-0-lite-260428  # 可选，按你的代理支持情况选择
-# 如果代理/WAF 对并发敏感（例如 524 timeout），建议串行 VLM:
+export OPENAI_API_URL=https://your-api-url/v1
+export OPENAI_MODEL=doubao-seed-2-0-lite-260428
+
+# Recommended when your proxy/provider is sensitive to concurrent VLM requests:
 export VLM_WORKERS=1
 ```
 
-## 使用
+## Quick start
 
-安装后，在 Claude Code 中直接说：
+After installing the skill, tell Claude Code:
 
-```
-帮我为 /path/to/video.mp4 生成解说视频
-```
-
-或者指定风格和背景：
-
-```
-用轻松幽默风格为这个视频生成解说，背景是欲望都市，男主Big，女主凯莉
+```text
+Create a Chinese recap video for /path/to/video.mp4 using video-recap.
+Use edge-tts with the Yunxi voice. Context: <show / movie / character background>.
 ```
 
-支持的触发词：`video-recap`、`视频解说`、`视频旁白`、`生成解说`、`视频recap`
+The pipeline prepares scene, ASR, and visual-analysis artifacts, then pauses with an `agent_narration_brief.md`. The agent writes `narration.json`, and the CLI resumes to synthesize voiceover and assemble the video.
 
-Agent 会根据你的描述自动选择风格、TTS 引擎等参数，也可以直接指定。
+If you want to start the first analysis pass manually:
 
-## 核心特性
+```bash
+python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
+  --tts edge-tts \
+  --voice zh-CN-YunxiNeural \
+  --context "show name, characters, or story background"
+```
 
-| 特性 | 说明 |
-|------|------|
-| Agent 亲自写解说词 | Claude 根据画面分析和剧情理解直接撰写，不套模板 |
-| Zone 模式 | 大段解说 + 原声交替，不是逐场景碎片段 |
-| 智能场景检测 | 基于 ffmpeg scdet 自动分割，短场景自动合并 |
-| VLM 深度分析 | 识别角色情绪、关系动态、潜台词 |
-| 静音感知插入 | 合并相邻安静窗口为解说区，避开对白 |
-| 动态 Ducking | 解说时原声大幅压低，不解说时原声满音量 |
-| 多风格支持 | 短剧 / 电视剧 / 电影 / 纪录片 / 科普视频 |
-| 断点续跑 | 每步结果持久化，中断后 `--resume` 恢复 |
+The command pauses before TTS and prints a `work_dir`. Read `work_dir/agent_narration_brief.md`, write `work_dir/narration.json`, then run the printed resume command.
 
-## 依赖
+### Doctor check
 
-| 依赖 | 用途 | 安装 |
-|------|------|------|
-| ffmpeg / ffprobe | 帧提取、场景检测、音频处理 | `brew install ffmpeg` |
-| edge-tts | TTS 语音合成（默认优先，Yunxi 音色） | `pip3 install edge-tts` |
-| qwen3-asr-rs | 本地 ASR 转录（可选） | 从源码编译 |
-| OpenAI 兼容 API | VLM 画面分析 | 需配置 API Key |
+```bash
+python3 skills/video-recap/scripts/video_recap.py --doctor
+```
 
-## 自定义
+Use `--doctor-tts-smoke` when you also want a short `edge-tts` synthesis check.
 
-所有 prompt 模板在 `skills/video-recap/references/prompt-templates.md`，直接编辑即可调整解说风格和质量。
+## Output
 
-VLM/LLM 默认模型可通过 `OPENAI_MODEL` 覆盖；`OPENAI_API_URL` 支持 OpenAI 兼容 base URL（如 `https://your-proxy/v1`）或完整 `/chat/completions` 端点。
+Typical outputs:
 
-## 致谢
+- `recap_<video>.mp4` — final recap video
+- `work_dir/subtitles.srt` — generated subtitles
+- `work_dir/agent_narration_brief.md` — timing and scene brief for the agent
+- `work_dir/narration.json` — agent-written narration script
+- `work_dir/vlm_analysis.json` — scene-level visual analysis
+- `work_dir/asr_result.json` — ASR result when available
+- `work_dir/tts_segments/` — generated TTS audio segments
+
+## Useful references
+
+- [Skill contract](skills/video-recap/SKILL.md)
+- [Agent workflow](skills/video-recap/references/agent-mode-workflow.md)
+- [Parameters](skills/video-recap/references/parameters.md)
+- [Prompt templates](skills/video-recap/references/prompt-templates.md)
+- [Resume and partial reruns](skills/video-recap/references/pipeline-resume.md)
+- [Data schema](skills/video-recap/references/data-schema.md)
+
+## Acknowledgements
 
 - [linux.do](https://linux.do)
 - [qwen3-asr-rs](https://github.com/alan890104/qwen3-asr-rs)
+
+## License
+
+MIT — see [LICENSE](LICENSE).

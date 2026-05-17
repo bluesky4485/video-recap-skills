@@ -37,8 +37,7 @@ def env_bool(name, default=False):
 CONFIG = {
     "api_url": normalize_api_url(os.environ.get("OPENAI_API_URL")),
     "api_key": os.environ.get("OPENAI_API_KEY", ""),
-    "vlm_model": os.environ.get("OPENAI_MODEL", "gpt-4o"),
-    "llm_model": os.environ.get("OPENAI_MODEL", "gpt-4o"),
+    "vlm_model": os.environ.get("OPENAI_MODEL", "doubao-seed-2-0-lite-260428"),
     "asr_bin": os.environ.get("ASR_BIN", "local_transcribe"),
     "asr_model_dir": os.environ.get("ASR_MODEL_DIR", ""),
     "scene_threshold": 0.1,

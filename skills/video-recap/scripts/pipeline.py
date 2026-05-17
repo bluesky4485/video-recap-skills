@@ -8,13 +8,13 @@ from pathlib import Path
 from config import CONFIG
 from common import log, api_call, get_video_duration
 from extract import extract_frames
-from detect import detect_scenes, detect_silence_periods, identify_narration_zones
+from detect import detect_scenes, detect_silence_periods
 from asr import transcribe_audio
 from vlm import analyze_scenes, analyze_narrative_structure
 from narration import (
-    generate_narration_zones, generate_narration,
-    _validate_narration_budget, _validate_and_rewrite_narration,
-    _post_dedup_narration, _align_narration_to_quiet, _zone_coverage_fill
+    build_agent_brief,
+    _validate_narration_budget,
+    _align_narration_to_quiet,
 )
 from tts import synthesize_tts
 from assemble import assemble_video
@@ -71,7 +71,7 @@ def _load_json_file(path, label):
 
 
 def _run_cached_tail_step(video_path, work_dir, step, style, output_dir):
-    """Run tts/assemble from existing artifacts without VLM/LLM/API prerequisites."""
+    """Run tts/assemble from existing artifacts without VLM/API prerequisites."""
     if step not in ("tts", "assemble"):
         return None
 
@@ -112,8 +112,7 @@ def _run_cached_tail_step(video_path, work_dir, step, style, output_dir):
 # ── Main Pipeline ─────────────────────────────────────────────────────
 
 def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
-                 scene_threshold=None, skip_asr=False, resume_dir=None,
-                 agent_mode=False):
+                 scene_threshold=None, skip_asr=False, resume_dir=None):
     """执行完整的视频解说 pipeline"""
     pipeline_start = time.time()
     video_path = Path(video_path)
@@ -141,7 +140,7 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
         "detect": lambda: detect_scenes(video_path, work_dir, scene_threshold),
         "asr": lambda: transcribe_audio(video_path, work_dir) if not skip_asr else [],
         "analyze": None,  # 需要前置数据
-        "script": None,   # 需要前置数据
+        "script": None,   # Agent-authored narration.json validation
         "tts": None,      # 需要前置数据
         "assemble": None, # 需要前置数据
     }
@@ -168,8 +167,7 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
     log("=" * 50)
 
     needs_vlm_api = not _is_step_done(work_dir, "vlm")
-    needs_script_api = not agent_mode and not _is_step_done(work_dir, "script")
-    if not CONFIG.get("api_key") and (needs_vlm_api or needs_script_api):
+    if not CONFIG.get("api_key") and needs_vlm_api:
         raise RuntimeError("请设置 OPENAI_API_KEY 环境变量")
 
     # API 连通性预检（避免跑完帧提取+ASR 才发现 API 不可用）
@@ -177,7 +175,7 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
         log("API 连通性预检...")
         try:
             api_call({
-                "model": CONFIG.get("vlm_model", CONFIG.get("llm_model", "")),
+                "model": CONFIG.get("vlm_model", ""),
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 5,
             })
@@ -261,57 +259,35 @@ def run_pipeline(video_path, output_dir=None, step=None, style="纪录片",
         _step_done(work_dir, "narrative")
         log(f"[{time.time()-t0:.1f}s] 叙事结构分析完成")
 
-    # Step 5: 解说脚本
+    # Step 5: Agent-authored narration script
+    narration_path = work_dir / "narration.json"
     if _is_step_done(work_dir, "script"):
-        narration = json.loads((work_dir / "narration.json").read_text())
-        log(f"跳过解说脚本（已存在 {len(narration)} 段）")
-    elif agent_mode:
-        # Agent 模式：在 Step 5 前暂停，等待 Agent 手动写解说词
+        narration = _load_json_file(narration_path, "narration.json")
+        narration = _validate_narration_budget(narration, vlm_analysis)
+        log(f"跳过解说词写作（已存在 {len(narration)} 段）")
+    elif narration_path.exists():
+        narration = _load_json_file(narration_path, "narration.json")
+        narration = _validate_narration_budget(narration, vlm_analysis)
+        narration = _align_narration_to_quiet(narration, vlm_analysis, silence_periods)
+        narration_path.write_text(json.dumps(narration, ensure_ascii=False, indent=2), encoding="utf-8")
+        _step_done(work_dir, "script")
+        log(f"Agent 解说词验证完成: {len(narration)} 段")
+    else:
+        brief_path = build_agent_brief(vlm_analysis, asr_result, silence_periods, video_duration, work_dir, style)
         log("=" * 50)
-        log("⏸  Agent 模式：Pipeline 在此暂停")
-        log("   请 Agent 基于 vlm_analysis.json / asr_result.json / silence_periods.json 亲自撰写解说词")
-        log(f"   写入 {work_dir}/narration.json 后执行:")
-        log(f"   touch {work_dir}/.step_script.done")
+        log("⏸  Pipeline 在解说词步骤暂停")
+        log(f"   请 Agent 阅读 {brief_path} 后写入 {narration_path}")
         cli_path = Path(__file__).with_name("video_recap.py")
+        log("   写完后继续执行:")
         log(f"   python3 {cli_path} {video_path} --resume {work_dir}")
         log("=" * 50)
-        (Path(work_dir) / ".step_script.paused").write_text("")
-        # 创建空 narration.json 占位，防止 resume 时 FileNotFoundError
-        (Path(work_dir) / "narration.json").write_text("[]")
-        return {"status": "paused", "work_dir": str(work_dir), "next_step": "write narration"}
-    else:
-        t0 = time.time()
-        if CONFIG.get("narration_mode") == "zone":
-            # 解说区模式：大段解说 + 原声交替
-            zones = identify_narration_zones(silence_periods, vlm_analysis, video_duration)
-            if zones:
-                narration = generate_narration_zones(zones, asr_result, work_dir, style)
-                narration = _validate_narration_budget(narration, vlm_analysis)
-                narration, _ = _validate_and_rewrite_narration(narration, vlm_analysis, work_dir)
-                narration = _post_dedup_narration(narration)
-                narration = _align_narration_to_quiet(narration, vlm_analysis, silence_periods)
-                # 混合补充：zone 模式覆盖率不足时，为重要未覆盖场景补充 fill 解说
-                narration = _zone_coverage_fill(narration, vlm_analysis, asr_result,
-                                                silence_periods, work_dir)
-            else:
-                log("解说区为空，fallback 到逐场景模式")
-                narration = generate_narration(vlm_analysis, asr_result, work_dir, style,
-                                               silence_periods=silence_periods)
-                narration, _ = _validate_and_rewrite_narration(narration, vlm_analysis, work_dir)
-                narration = _post_dedup_narration(narration)
-                narration = _align_narration_to_quiet(narration, vlm_analysis, silence_periods)
-        else:
-            # 逐场景模式（原始）
-            narration = generate_narration(vlm_analysis, asr_result, work_dir, style,
-                                           silence_periods=silence_periods)
-            narration, _ = _validate_and_rewrite_narration(narration, vlm_analysis, work_dir)
-            narration = _post_dedup_narration(narration)
-            narration = _align_narration_to_quiet(narration, vlm_analysis, silence_periods)
-        # 保存
-        (work_dir / "narration.json").write_text(
-            json.dumps(narration, ensure_ascii=False, indent=2))
-        _step_done(work_dir, "script")
-        log(f"[{time.time()-t0:.1f}s] 解说脚本完成")
+        (work_dir / ".step_script.paused").write_text("", encoding="utf-8")
+        return {
+            "status": "paused",
+            "work_dir": str(work_dir),
+            "brief": str(brief_path),
+            "next_step": "write narration.json",
+        }
 
     # Step 6: TTS
     tts_meta = work_dir / "tts_meta.json"

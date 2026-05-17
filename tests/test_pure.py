@@ -1,12 +1,11 @@
 """Pure function unit tests for video-recap modules."""
 import sys
-import os
 from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'skills' / 'video-recap' / 'scripts'))
 
 from common import _retry_after_seconds, get_video_duration
 from config import CONFIG, env_bool, env_int, normalize_api_url
@@ -205,3 +204,75 @@ def test_step_tts_runs_from_cached_narration_without_api(monkeypatch, tmp_path):
     assert len(result["segments"]) == 1
     assert (work_dir / ".step_tts.done").exists()
     assert (work_dir / "tts_meta.json").exists()
+
+
+def test_full_pipeline_pauses_for_agent_brief_without_script_api(monkeypatch, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    output = tmp_path / "out"
+
+    monkeypatch.setitem(CONFIG, "api_key", "test-key")
+    monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 8.0)
+    monkeypatch.setattr("pipeline.api_call", lambda payload: {"choices": [{"message": {"content": "ok"}}]})
+    monkeypatch.setattr("pipeline.extract_frames", lambda video_path, work_dir: [work_dir / "frames" / "frame_00001.jpg"])
+    monkeypatch.setattr("pipeline.detect_scenes", lambda video_path, work_dir, threshold: [{"start": 0.0, "end": 8.0}])
+    monkeypatch.setattr("pipeline.transcribe_audio", lambda video_path, work_dir: [])
+    monkeypatch.setattr("pipeline.detect_silence_periods", lambda video_path, work_dir, asr: [{"start": 1.0, "end": 6.0, "duration": 5.0, "has_speech": False}])
+    monkeypatch.setattr("pipeline.analyze_scenes", lambda scenes, frames, work_dir: [{
+        "scene_id": 0,
+        "start": 0.0,
+        "end": 8.0,
+        "description": "角色沉默对视。",
+        "depth_analysis": "关系紧张。",
+    }])
+    monkeypatch.setattr("pipeline.synthesize_tts", lambda narration, wd: (_ for _ in ()).throw(AssertionError("TTS should wait for narration")))
+
+    result = run_pipeline(video, output_dir=output)
+
+    work_dir = Path(result["work_dir"])
+    assert result["status"] == "paused"
+    assert (work_dir / "agent_narration_brief.md").exists()
+    assert not (work_dir / "narration.json").exists()
+    assert not (work_dir / ".step_script.done").exists()
+
+
+def test_resume_validates_existing_agent_narration_without_api(monkeypatch, tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fake")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / ".step_extract.done").write_text("ok")
+    (work_dir / ".step_detect.done").write_text("ok")
+    (work_dir / ".step_asr.done").write_text("ok")
+    (work_dir / ".step_silence.done").write_text("ok")
+    (work_dir / ".step_vlm.done").write_text("ok")
+    (work_dir / "scenes.json").write_text('[{"start":0.0,"end":6.0}]')
+    (work_dir / "asr_result.json").write_text('[]')
+    (work_dir / "silence_periods.json").write_text('[{"start":0.0,"end":6.0,"duration":6.0,"has_speech":false}]')
+    (work_dir / "vlm_analysis.json").write_text('[{"scene_id":0,"start":0.0,"end":6.0,"description":"测试场景"}]')
+    (work_dir / "narration.json").write_text('[{"start":0.5,"end":5.5,"narration":"他终于意识到，沉默比争吵更伤人。"}]')
+
+    monkeypatch.setitem(CONFIG, "api_key", "")
+    monkeypatch.setitem(CONFIG, "fps", 1)
+    monkeypatch.setitem(CONFIG, "skip_narrative_analysis", True)
+    monkeypatch.setattr("pipeline.check_prerequisites", lambda skip_asr=False: True)
+    monkeypatch.setattr("pipeline.get_video_duration", lambda path: 6.0)
+    monkeypatch.setattr("pipeline.api_call", lambda payload: (_ for _ in ()).throw(AssertionError("API should not be called")))
+    monkeypatch.setattr("pipeline.synthesize_tts", lambda narration, wd: ([{
+        "index": 0,
+        "start": narration[0]["start"],
+        "end": narration[0]["end"],
+        "narration": narration[0]["narration"],
+        "audio_path": str(wd / "narr_000.wav"),
+        "audio_duration": 1.0,
+    }], "say"))
+    monkeypatch.setattr("pipeline.assemble_video", lambda video_path, tts_segments, wd, output_path: output_path.write_bytes(b"mp4"))
+
+    result = run_pipeline(video, resume_dir=work_dir)
+
+    assert result["tts_engine"] == "say"
+    assert (work_dir / ".step_script.done").exists()
+    assert (work_dir / "output.mp4").exists()

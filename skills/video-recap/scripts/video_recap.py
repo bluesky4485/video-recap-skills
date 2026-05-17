@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""video-recap: 视频自动解说生成器
-输入视频 → 场景检测 → 帧提取 → VLM视觉分析 → ASR转录 → LLM脚本生成 → TTS合成 → 视频组装
+"""video-recap: agent-authored Chinese recap video pipeline.
+Input video → scene/frame analysis → ASR/VLM artifacts → agent writes narration.json → TTS → assembly.
 """
 
 import argparse
@@ -16,13 +16,13 @@ from pipeline import run_pipeline
 
 def main():
     parser = argparse.ArgumentParser(
-        description="video-recap: 视频自动解说生成器",
+        description="video-recap: Agent 写解说词的视频 recap pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("video", help="输入视频文件路径")
+    parser.add_argument("video", nargs="?", help="输入视频文件路径")
     parser.add_argument("--output", "-o", help="输出目录 (默认: 视频所在目录/output)")
     parser.add_argument("--step", choices=["extract", "detect", "asr", "analyze", "script", "tts", "assemble"],
-                        help="仅执行某步骤")
+                        help="仅执行某步骤；script 只验证 Agent 写好的 narration.json")
     parser.add_argument("--style", default="纪录片",
                         choices=["短剧", "电视剧", "电影", "纪录片", "科普视频"],
                         help="解说风格 (默认: 纪录片)")
@@ -44,13 +44,14 @@ def main():
     parser.add_argument("--context", type=str, default="",
                         help="额外上下文（节目名、角色名等）")
     parser.add_argument("--model", type=str, default=None,
-                        help="覆盖 VLM/LLM 模型名 (默认: gpt-4o 或 OPENAI_MODEL 环境变量)")
+                        help="覆盖 VLM 模型名 (默认: OPENAI_MODEL 或 doubao-seed-2-0-lite-260428)")
     parser.add_argument("--vlm-model", type=str, default=None,
                         help="单独覆盖 VLM 模型名 (优先级高于 --model)")
-    parser.add_argument("--llm-model", type=str, default=None,
-                        help="单独覆盖 LLM 模型名 (优先级高于 --model)")
-    parser.add_argument("--agent-mode", action="store_true",
-                        help="Agent 模式：在解说脚本步骤暂停，等待 Agent 手动写解说词")
+    parser.add_argument("--agent-mode", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--doctor", action="store_true",
+                        help="检查 ffmpeg / edge-tts / API 配置后退出")
+    parser.add_argument("--doctor-tts-smoke", action="store_true",
+                        help="doctor 时额外运行一个 edge-tts 试合成")
     parser.add_argument("--voice", type=str, default=None,
                         help="覆盖 edge-tts 音色 (如 zh-CN-YunxiNeural)")
     parser.add_argument("--vlm-workers", type=int, default=None,
@@ -71,11 +72,8 @@ def main():
     CONFIG["context_info"] = args.context
     if args.model:
         CONFIG["vlm_model"] = args.model
-        CONFIG["llm_model"] = args.model
     if args.vlm_model:
         CONFIG["vlm_model"] = args.vlm_model
-    if args.llm_model:
-        CONFIG["llm_model"] = args.llm_model
     if args.voice:
         CONFIG["edge_tts_voice"] = args.voice
     if args.vlm_workers is not None:
@@ -91,6 +89,22 @@ def main():
     if args.ducking:
         CONFIG["ducking_mode"] = args.ducking
 
+    if args.doctor:
+        from doctor import main as doctor_main
+
+        doctor_args = ["doctor"]
+        if args.doctor_tts_smoke:
+            doctor_args.append("--tts-smoke")
+        old_argv = sys.argv
+        try:
+            sys.argv = doctor_args
+            sys.exit(doctor_main())
+        finally:
+            sys.argv = old_argv
+
+    if not args.video:
+        parser.error("video is required unless --doctor is used")
+
     try:
         result = run_pipeline(
             video_path=args.video,
@@ -100,7 +114,6 @@ def main():
             scene_threshold=args.scene_threshold,
             skip_asr=args.skip_asr,
             resume_dir=args.resume,
-            agent_mode=args.agent_mode,
         )
         if isinstance(result, dict):
             print(json.dumps(result, ensure_ascii=False, indent=2))

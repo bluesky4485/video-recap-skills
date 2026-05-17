@@ -112,7 +112,7 @@ def assemble_video(input_video, tts_segments, work_dir, output_path):
         speech_vol = CONFIG.get("speech_ducking_volume", 0.2)
         narr_vol = CONFIG.get("ducking_narr_weight", 1.5)
         # 构建 if(between(t,s,e),1,0) 指示器，逗号用 \, 转义避免 ffmpeg 解析为 filter 分隔符
-        # 使用实际放置时间（actual_place_start/end），非 LLM 指定时间
+        # 使用实际放置时间（actual_place_start/end），非 narration.json 原始时间
         def _seg_indicator(seg):
             s = seg.get("actual_place_start", seg.get("start", 0))
             e = seg.get("actual_place_end", seg.get("end", 0))
@@ -315,7 +315,7 @@ def _build_timed_narration(tts_segments, output_wav, video_duration, work_dir):
         start_sample = int((seg["start"] + narration_delay) * sample_rate)
         end_boundary = int(min(seg["end"], video_duration) * sample_rate)
 
-        # 段间间隔：使用前一段的 pause_after_ms（来自 LLM）
+        # 段间间隔：使用前一段的 pause_after_ms（来自 narration.json）
         # 第一段无延迟，后续段在前段结束后等待前段的 pause
         min_start_with_pause = last_written_end + prev_pause_samples
         actual_start = max(start_sample, min_start_with_pause)

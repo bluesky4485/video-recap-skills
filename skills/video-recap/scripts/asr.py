@@ -2,7 +2,7 @@ import json
 import re
 
 from config import CONFIG
-from common import log, run_cmd, api_call, get_video_duration, load_prompt, _parse_narration_json
+from common import log, run_cmd, get_video_duration
 
 # ── Step 3: ASR 转录 ──────────────────────────────────────────────────
 
@@ -87,67 +87,27 @@ def _segment_and_transcribe(audio_wav, segments_dir, total_duration):
 
 
 def _distribute_asr_by_scenes(asr_result, scenes_analysis):
-    """将 ASR 文本按语义分配到场景（LLM 优先，按时长比例 fallback）"""
+    """将 ASR 文本按时长比例分配到场景，避免在解说词阶段额外调用文本生成 API。"""
     if not asr_result:
         return ""
-
-    full_text = " ".join(seg["text"] for seg in asr_result if seg["text"])
+    full_text = " ".join(seg["text"] for seg in asr_result if seg.get("text"))
     if not full_text:
         return ""
-
-    # 尝试 LLM 语义对齐
-    align_prompt = load_prompt("ASR_ALIGN_PROMPT")
-    if align_prompt and scenes_analysis:
-        scenes_desc = ""
-        for s in scenes_analysis:
-            scenes_desc += f"- scene_id={s['scene_id']} ({s['start']:.1f}s-{s['end']:.1f}s): {s['description']}\n"
-
-        payload = {
-            "model": CONFIG["vlm_model"],
-            "messages": [
-                {"role": "user", "content": f"{align_prompt}\n\n场景列表：\n{scenes_desc.strip()}\n\nASR 转录文本：\n{full_text}"},
-            ],
-            "max_tokens": 1000,
-        }
-
-        try:
-            resp = api_call(payload)
-            msg = resp["choices"][0]["message"]
-            result_text = msg.get("content", "") or msg.get("reasoning_content", "")
-            alignments = _parse_narration_json(result_text)
-            if isinstance(alignments, list) and alignments:
-                lines = []
-                for a in alignments:
-                    sid = a.get("scene_id", 0)
-                    text = a.get("text", "")
-                    if text and 0 <= sid < len(scenes_analysis):
-                        s = scenes_analysis[sid]
-                        lines.append(f"[{s['start']:.0f}s-{s['end']:.0f}s] {text}")
-                if lines:
-                    log("ASR 语义对齐成功")
-                    return "\n".join(lines)
-        except Exception as e:
-            log(f"ASR 语义对齐失败，使用时长比例分配: {e}")
-
-    # Fallback: 按时长比例分配
     return _distribute_asr_by_time(asr_result, scenes_analysis)
 
 
 def _distribute_asr_by_time(asr_result, scenes_analysis):
-    """按时长比例分配 ASR 文本到场景（fallback）"""
-    full_text = " ".join(seg["text"] for seg in asr_result if seg["text"])
+    """按时长比例分配 ASR 文本到场景。"""
+    full_text = " ".join(seg["text"] for seg in asr_result if seg.get("text"))
     if not full_text:
         return ""
-
     total_duration = sum(s["end"] - s["start"] for s in scenes_analysis)
     if total_duration == 0:
         return full_text
-
     words = full_text.split()
     total_words = len(words)
     if total_words == 0:
         return ""
-
     lines = []
     word_offset = 0
     for s in scenes_analysis:
@@ -158,14 +118,12 @@ def _distribute_asr_by_time(asr_result, scenes_analysis):
         if segment_text:
             lines.append(f"[{s['start']:.0f}s-{s['end']:.0f}s] {segment_text}")
         word_offset = end_offset
-
     if word_offset < total_words:
         remaining = " ".join(words[word_offset:])
         if lines:
             lines[-1] += " " + remaining
         else:
             lines.append(remaining)
-
     return "\n".join(lines)
 
 

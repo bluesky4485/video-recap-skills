@@ -1,28 +1,26 @@
-# Agent 模式工作流
+# Agent 解说词工作流
 
-## 输入文件清单
+## 运行前置分析
 
-Agent 写解说词前，先读取以下中间文件（均在 work_dir/ 下）：
+```bash
+python3 scripts/video_recap.py <video> --tts edge-tts --context "背景"
+```
+
+Pipeline 会完成场景检测、ASR、VLM 分析和静音检测，然后暂停，并在 `work_dir/` 里写出：
 
 | 文件 | 内容 |
 |------|------|
+| `agent_narration_brief.md` | 给 Agent 写解说词用的场景、时长、安静窗口和字数预算 |
 | `vlm_analysis.json` | 每场景的画面描述、深度分析、帧级事实 (`frame_facts`) |
 | `asr_result.json` | 语音转文字结果，含时间戳和对白文本 |
 | `silence_periods.json` | 静音窗口列表，用于确定解说放置位置 |
 
+写稿时优先读 `agent_narration_brief.md`，需要查证细节时再看原始 JSON。
+
 ## 背景调研（推荐）
 
-详细操作指南见 `references/research-guide.md`。以下为快速参考。
+详细操作指南见 `references/research-guide.md`。如果 `--context` 包含节目/电影名称，且当前环境有可用搜索/浏览能力，推荐先调研并写入 `work_dir/background_research.json`：
 
-当 `--context` 包含节目/电影名称时，推荐使用 `browser-cdp` skill 进行背景调研。调研结果可丰富解说中的角色关系、剧情走向和文化背景，提升解说深度。若用户拒绝或 `browser-cdp` 不可用，则跳过调研继续后续流程。
-
-用 `browser-cdp` skill 搜索以下内容，写入 `work_dir/background_research.json`：
-
-- `"{节目名} 剧情 介绍"` → synopsis
-- `"{节目名} 人物 关系"` → characters
-- `"{节目名} 世界观/设定"` → worldbuilding
-
-**background_research.json 格式：**
 ```json
 {
   "synopsis": "...",
@@ -32,8 +30,6 @@ Agent 写解说词前，先读取以下中间文件（均在 work_dir/ 下）：
 }
 ```
 
-Pipeline 会自动检测并注入到解说生成的 system prompt 中。
-
 ## narration.json 字段
 
 ```json
@@ -41,7 +37,7 @@ Pipeline 会自动检测并注入到解说生成的 system prompt 中。
   {
     "start": 5.0,
     "end": 12.0,
-    "narration": "解说文本",
+    "narration": "解说文本。",
     "pause_after_ms": 600,
     "overlaps_speech": false
   }
@@ -53,29 +49,29 @@ Pipeline 会自动检测并注入到解说生成的 system prompt 中。
 | `start` | 解说开始时间（秒） |
 | `end` | 解说结束时间（秒） |
 | `narration` | 解说文本 |
-| `pause_after_ms` | 段后停顿毫秒数 |
-| `overlaps_speech` | 是否与原声对白重叠 |
+| `pause_after_ms` | 段后停顿毫秒数，默认 600 |
+| `overlaps_speech` | 是否与原声对白重叠；优先 false |
 
-## 写作铁律
+## 写作规则
 
-1. **禁止看图说话**：观众看得见画面，不要描述动作和表情
-2. **讲故事**：揭示角色意图、潜台词、关系动态
-3. **大段解说 + 原声交替**：解说区集中在安静窗口，原声区保留原始对白
-4. **字数公式**：每段字数 ≤ (end - start - 0.6) × 3，超限会被截断
-5. **用角色名**：如果提供了 `--context`，使用角色名（如 Big、凯莉）
+1. **不要看图说话**：观众看得见动作和表情，解说应讲动机、关系、潜台词和剧情意义。
+2. **优先安静窗口**：尽量放在 brief 给出的 quiet windows；重要对白不要盖住。
+3. **控制字数**：每段字数 ≤ `(end - start - 0.6) × 3`，宁短不长。
+4. **保留原声节奏**：对白精彩处可以不写解说，让原片说话。
+5. **用已知角色名**：如果 `--context` 或调研提供了角色名，优先使用角色名。
+6. **完整句子**：以句号、问号或感叹号结束，不写半句话。
 
-## 完成后操作
+## 继续 TTS + 组装
 
-写完 narration.json 后执行：
+写完 `narration.json` 后执行：
 
 ```bash
-# 标记解说词完成
-touch work_dir/.step_script.done
-# 清除 TTS 缓存（否则复用旧音频）
-rm -rf work_dir/tts_segments/ work_dir/.step_tts.done \
-  work_dir/.step_assemble.done work_dir/tts_meta.json
-# 继续 TTS + 组装
 python3 scripts/video_recap.py <video> --resume work_dir
 ```
 
-**每次改完 narration.json 后必须删 `tts_segments/`**，否则会复用旧音频。
+如果改过已经配音的 `narration.json`，先清理旧 TTS 缓存：
+
+```bash
+rm -rf work_dir/tts_segments/ work_dir/.step_tts.done \
+  work_dir/.step_assemble.done work_dir/tts_meta.json
+```

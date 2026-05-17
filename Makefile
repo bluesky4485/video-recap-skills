@@ -1,4 +1,4 @@
-.PHONY: recap demo package lint test clean help
+.PHONY: recap demo package lint test doctor clean help
 SKILL_DIR := skills/video-recap
 VIDEO ?=
 
@@ -14,14 +14,17 @@ package: ## package skill
 	~/.claude/skills/skill-creator/scripts/package_skill.py $(SKILL_DIR)
 
 lint: ## lint
-	cd $(SKILL_DIR) && if command -v ruff >/dev/null 2>&1; then \
-		ruff check scripts tests; \
+	@if command -v ruff >/dev/null 2>&1; then \
+		ruff check $(SKILL_DIR)/scripts tests; \
 	else \
-		python3 -m pyflakes scripts/*.py tests/*.py; \
+		python3 -m pyflakes $(SKILL_DIR)/scripts/*.py tests/*.py; \
 	fi
 
 test: ## run tests
-	cd $(SKILL_DIR) && python3 -m pytest tests/ -v
+	python3 -m pytest tests/ -v
+
+doctor: ## check runtime prerequisites
+	python3 $(SKILL_DIR)/scripts/video_recap.py --doctor
 
 clean: ## clean
 	rm -rf $(SKILL_DIR)/work_dir_* recap_*.mp4 *.skill

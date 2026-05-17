@@ -1,69 +1,74 @@
-# 背景调研指南（browser-cdp）
+# 背景调研指南（可选）
 
-Agent 写解说词前的可选调研步骤。用 browser-cdp 搜索视频背景信息，丰富解说深度。
+Agent 写解说词前可以做背景调研，用来确认作品名、角色关系、剧情背景或科普概念。**调研不是必需步骤**；没有浏览器工具、网络不可用或用户未提供明确片名时，直接跳过，不阻塞视频生成。
+
+## 工具选择
+
+使用当前环境里可用的任意检索方式即可，例如：
+
+- Codex / Claude 自带的联网搜索或网页浏览工具
+- 用户已经配置好的浏览器自动化或页面读取工具
+- 普通浏览器手动查找后把结果整理进 JSON
+- 已知资料、用户给的剧情背景或项目内已有文档
 
 ## 通用流程
 
-```bash
-# 1. 启动 CDP Chrome
-bash {browser-cdp-scripts}/setup_cdp_chrome.sh 9222
-
-# 2. 搜索：打开 Google → 等待加载 → eval 提取文本
-agent-browser --cdp 9222 open "https://www.google.com/search?q=关键词"
-agent-browser --cdp 9222 wait 3000
-agent-browser --cdp 9222 eval 'document.body.innerText.substring(0,6000)'
-
-# 3. 将结果写入 JSON
-# 写入 work_dir/background_research.json，schema 见 data-schema.md
-
-# 4. 清理
-agent-browser --cdp 9222 close
-```
-
-**核心模式**：每次搜索 → 提取正文 → 归入对应字段 → 写入 JSON。
+1. 从 `--context`、文件名或用户描述里提取可搜索关键词。
+2. 搜索 1-3 个高价值问题，不要过度调研。
+3. 只记录对解说有帮助的事实：人物关系、剧情前提、世界观、当前集上下文、术语解释。
+4. 写入 `work_dir/background_research.json`。
+5. 如果查不到可靠信息，跳过并继续写 `narration.json`。
 
 ## 按视频类型搜索策略
 
-### 短剧/电视剧（3 次搜索）
+### 短剧 / 电视剧
 
 | 搜索关键词 | 目标字段 |
 |-----------|---------|
 | `{作品名} 剧情 介绍 人物` | synopsis, characters |
-| `{作品名} 人物 关系` | characters（关系补充） |
+| `{作品名} 人物 关系` | characters |
 | `{作品名} 第{N}集 剧情` | episode_context |
 
-### 电影（2 次搜索）
+### 电影
 
 | 搜索关键词 | 目标字段 |
 |-----------|---------|
 | `{电影名} 剧情 简介` | synopsis |
 | `{电影名} 影评 解读` | cultural_notes |
 
-### 纪录片（2 次搜索）
+### 纪录片 / 科普视频
 
 | 搜索关键词 | 目标字段 |
 |-----------|---------|
 | `{主题} 背景 知识` | worldbuilding |
+| `{核心概念} 解释` | synopsis |
 | `{主题} 最新 进展` | cultural_notes |
 
-### 科普视频（2 次搜索）
+## 写入格式
 
-| 搜索关键词 | 目标字段 |
-|-----------|---------|
-| `{核心概念} 解释` | synopsis |
-| `{核心概念} 最新 研究` | cultural_notes |
+写入 `work_dir/background_research.json`，只填搜到的字段，未搜到的字段省略，不要写 `null` 或空字符串。
+
+```json
+{
+  "synopsis": "...",
+  "characters": {
+    "角色名": "简介或关系"
+  },
+  "worldbuilding": "...",
+  "episode_context": "...",
+  "cultural_notes": [
+    {"item": "...", "explanation": "..."}
+  ]
+}
+```
 
 ## 错误处理
 
 | 场景 | 处理 |
 |------|------|
-| CDP 连接失败 | 跳过调研，直接写解说词 |
+| 没有浏览器 / 搜索工具 | 跳过调研，直接写解说词 |
 | 搜索无结果 | 换一组关键词重试一次，仍无结果则跳过 |
-| 页面非中文 | URL 加 `&hl=zh-CN` 重试，仍非中文则跳过 |
+| 结果互相矛盾 | 只使用用户提供的上下文或画面/ASR 可验证的信息 |
+| 信息可能剧透后续 | 只用于理解人物关系，不在解说里剧透用户没要求的后续剧情 |
 
-**原则**：调研是可选的，任何失败都不阻塞解说词生成流程。
-
-## 写入格式
-
-写入 `work_dir/background_research.json`，schema 见 `data-schema.md`。
-只填搜索到的字段，未搜到的字段省略（不要写 null 或空字符串）。
+**原则**：背景资料只能补上下文，不能替代 `vlm_analysis.json` / `asr_result.json` 里的画面和对白证据。

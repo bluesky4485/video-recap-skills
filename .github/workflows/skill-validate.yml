@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'skills/**'
+      - 'tests/**'
+      - 'Makefile'
 
 jobs:
   validate:
@@ -12,7 +14,7 @@ jobs:
       - name: Install deps
         run: pip3 install --break-system-packages pyflakes pytest
       - name: Lint
-        run: cd skills/video-recap/scripts && python3 -m pyflakes *.py
+        run: python3 -m pyflakes skills/video-recap/scripts/*.py tests/*.py
       - name: Check SKILL.md
         run: |
           LINES=$(wc -l < skills/video-recap/SKILL.md)
@@ -20,14 +22,13 @@ jobs:
           head -1 skills/video-recap/SKILL.md | grep -q "^---" || { echo "SKILL.md missing frontmatter"; exit 1; }
       - name: Validate prompt anchors
         run: |
-          cd skills/video-recap/scripts
           python3 -c "
           import re, glob
           anchors = set()
-          for f in glob.glob('*.py'):
+          for f in glob.glob('skills/video-recap/scripts/*.py'):
               for m in re.finditer(r'load_prompt\([\"\\x27](.+?)[\"\\x27]\)', open(f).read()):
                   anchors.add(m.group(1))
-          content = open('../references/prompt-templates.md').read()
+          content = open('skills/video-recap/references/prompt-templates.md').read()
           for a in sorted(anchors):
               if f'### {a}' not in content:
                   print(f'MISSING anchor: ### {a}')
@@ -35,4 +36,4 @@ jobs:
           print(f'All {len(anchors)} anchors OK')
           "
       - name: Test
-        run: cd skills/video-recap && python3 -m pytest tests/ -v
+        run: python3 -m pytest tests/ -v

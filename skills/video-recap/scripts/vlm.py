@@ -208,7 +208,7 @@ def analyze_narrative_structure(scenes_analysis, work_dir):
         scenes_text += f"- scene_id={s['scene_id']} ({s['start']:.1f}s-{s['end']:.1f}s): {s['description']}\n"
 
     payload = {
-        "model": CONFIG.get("llm_model", CONFIG["vlm_model"]),
+        "model": CONFIG["vlm_model"],
         "messages": [
             {"role": "user", "content": f"{analysis_prompt}\n\n场景列表：\n{scenes_text.strip()}"},
         ],
