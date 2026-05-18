@@ -143,7 +143,7 @@ python3 skills/video-recap/scripts/video_recap.py /path/to/video.mp4 \
   --burn-subtitles
 ```
 
-字幕支持针对 Agent 写出的解说词，不是原片对白的 ASR 字幕。CLI 会根据最终 `narration.json` / TTS 实际放置时间导出 `subtitles.srt`；压制时会额外生成内部使用的 `subtitles.ass`，使用底部居中的可读样式。`asr_result.json` 只作为写解说时的剧情/对白参考，不会直接导出或压制成原片对白字幕。压制会对视频重编码，当前 `ffmpeg` 需要带 `subtitles`/libass 滤镜。
+CLI 会根据最终 `narration.json` 和 TTS 实际放置时间导出 `subtitles.srt`；压制时会额外生成内部使用的 `subtitles.ass`，使用底部居中的可读样式。压制会对视频重编码，当前 `ffmpeg` 需要带 `subtitles`/libass 滤镜。
 
 ### Doctor 自检
 
@@ -166,7 +166,7 @@ python3 skills/video-recap/scripts/video_recap.py --doctor
 - `work_dir/edited_source.mp4`：cut 模式下拼出的短视频源
 - `work_dir/narration_mapped.json`：从原视频时间映射到短视频时间的解说稿
 - `work_dir/vlm_analysis.json`：场景级视觉分析
-- `work_dir/asr_result.json`：可用时的 ASR 转写结果；用于写解说参考，不是字幕源
+- `work_dir/asr_result.json`：可用时的 ASR 转写结果；用于写解说参考
 - `work_dir/tts_segments/`：分段 TTS 音频
 
 ## 参考文档
