@@ -541,7 +541,7 @@ def assemble_video(input_video, tts_segments, work_dir, output_path):
     filter_complex_bytes = filter_complex.encode('utf-8')
     if len(filter_complex_bytes) > 8000:
         fc_script = Path(work_dir) / ".filter_complex.txt"
-        fc_script.write_text(filter_complex)
+        fc_script.write_text(filter_complex, encoding="utf-8")
         log(f"使用 filter_complex_script (表达式长度 {len(filter_complex_bytes)} bytes)")
         cmd = [
             "ffmpeg", "-y",
@@ -808,7 +808,9 @@ def main():
                     help="also export an OPTIONAL 剪映/JianYing draft from timeline.json after rendering")
     ap.add_argument("--jianying-out", default=None, help="parent dir for the 剪映 draft (default: work-dir)")
     ap.add_argument("--jianying-bundle-media", action="store_true",
-                    help="copy media into the 剪映 draft folder so it is portable/self-contained")
+                    help="copy media into the 剪映 draft folder (default on; portable/self-contained)")
+    ap.add_argument("--jianying-no-bundle-media", action="store_true",
+                    help="do NOT copy media into the draft — reference in place (only if 剪映 can read those paths; macOS 剪映 usually cannot)")
     args = ap.parse_args()
     work_dir = Path(args.work_dir)
     if args.burn_subtitles:
@@ -819,6 +821,8 @@ def main():
         CONFIG["export_jianying"] = True
     if args.jianying_bundle_media:
         CONFIG["jianying_bundle_media"] = True
+    if args.jianying_no_bundle_media:
+        CONFIG["jianying_bundle_media"] = False
     tts_meta = Path(args.tts_meta) if args.tts_meta else work_dir / "tts_meta.json"
     tts_segments = json.loads(tts_meta.read_text(encoding="utf-8"))["segments"]
     output_path = work_dir / "output.mp4"
