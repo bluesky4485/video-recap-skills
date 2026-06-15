@@ -121,8 +121,26 @@ def test_build_agent_brief_cut_mode_sizes_to_output(monkeypatch, tmp_path):
     assert "CUT OUTPUT" in text
     assert "10 short beats" in text       # 1min output * 10/min = 10 beats (sized to output)
     assert "100 short beats" not in text   # the old source-sized (buggy) count
-    assert "Keep each beat INSIDE one clip" in text
+    assert "step 1 of 2" in text           # A1: cut-first, write clip_plan only (no edited_source yet)
     assert '"target_duration": "1m"' in text
+
+
+def test_build_agent_brief_cut_pass2_is_output_timeline(monkeypatch, tmp_path):
+    """Step 6: once the cut is rendered (edited_source.mp4 exists), the cut brief switches to
+    the PASS-2 output-timeline variant: narrate in OUTPUT time, with the kept clips listed."""
+    monkeypatch.setitem(CONFIG, "edit_mode", "cut")
+    monkeypatch.setitem(CONFIG, "target_duration", "1m")
+    monkeypatch.setitem(CONFIG, "context_info", "")
+    (tmp_path / "edited_source.mp4").write_bytes(b"edited")
+    (tmp_path / "clip_plan_validated.json").write_text(json.dumps({"clips": [
+        {"clip_id": 0, "source_start": 10.0, "source_end": 20.0, "output_start": 0.0, "output_end": 10.0, "reason": "开端"},
+    ]}), encoding="utf-8")
+    scenes = [{"scene_id": 0, "start": 0.0, "end": 60.0, "description": "画面"}]
+    text = build_agent_brief(scenes, [], [], 600.0, tmp_path).read_text(encoding="utf-8")
+    assert "step 2 of 2: write `narration.json` in OUTPUT time" in text
+    assert "Kept clips on the OUTPUT timeline" in text
+    assert "output 0.0–10.0s ← source 10.0–20.0s" in text
+    assert "step 1 of 2" not in text
 
 
 def test_build_agent_brief_thin_substrate_relaxes_density(monkeypatch, tmp_path):
@@ -153,6 +171,20 @@ def test_build_agent_brief_research_directive_when_context_without_research(monk
     (tmp_path / "background_research.json").write_text('{"synopsis": "范闲查案"}', encoding="utf-8")
     text2 = build_agent_brief(scenes, asr, [], 6.0, tmp_path).read_text(encoding="utf-8")
     assert "Research the story FIRST" not in text2  # already researched -> directive gone
+
+
+def test_research_directive_does_not_fire_for_dialogue_rich_titled_run(monkeypatch, tmp_path):
+    """Step 3: a dialogue-rich (substrate=rich) titled run with no research file must NOT be
+    nagged — the directive fires only for thin/empty substrate, not merely because a title exists."""
+    monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "target_duration", "")
+    monkeypatch.setitem(CONFIG, "context_info", "这是《庆余年》第一集")  # a title, but no research file
+    scenes = [{"scene_id": i, "start": float(i * 6), "end": float(i * 6 + 6),
+               "description": "范闲与人对峙", "frame_facts": {str(i * 6): ["对峙"]}} for i in range(4)]
+    asr = [{"start": 1.0, "end": 5.0, "text": "对" * 250}]  # rich dialogue spine
+    assert assess_understanding_substrate(scenes, asr)["level"] == "rich"
+    text = build_agent_brief(scenes, asr, [], 24.0, tmp_path).read_text(encoding="utf-8")
+    assert "Research the story FIRST" not in text  # rich + titled -> no nag
 
 
 def test_lint_narration_cut_mode_warns_on_clip_boundary_crossing():
@@ -364,6 +396,22 @@ def test_build_agent_brief_storyless_rich_video_relaxes_and_prompts_research(mon
     assert "do NOT chase a beat count" in text          # density relaxed (FIX D)
     assert "Research the story FIRST" in text            # research directive (FIX E)
     assert "segments/min (minimum" not in text           # strict quota line suppressed
+
+
+def test_build_agent_brief_rich_density_is_a_guide_not_quota(monkeypatch, tmp_path):
+    """Step 1: even with RICH substrate, density is framed as a GUIDE, not a hard quota,
+    so the writer never pads with pixel-filler just to hit a beat count."""
+    monkeypatch.setitem(CONFIG, "edit_mode", "full")
+    monkeypatch.setitem(CONFIG, "target_duration", "")
+    monkeypatch.setitem(CONFIG, "context_info", "")
+    scenes = [{"scene_id": i, "start": float(i * 6), "end": float(i * 6 + 6),
+               "description": "范闲在书房翻看卷宗神色凝重", "frame_facts": {str(i * 6): ["翻书"]}} for i in range(6)]
+    asr = [{"start": 1.0, "end": 5.0, "text": "对" * 250}]  # >= 200 chars -> a real story spine -> rich
+    assert assess_understanding_substrate(scenes, asr)["level"] == "rich"
+    text = build_agent_brief(scenes, asr, [], 36.0, tmp_path).read_text(encoding="utf-8")
+    assert "a GUIDE, not a quota" in text
+    assert "never pad with" in text
+    assert "Narration density target:" not in text  # the old hard-quota phrasing is gone
 
 
 def test_cut_validate_prefers_raw_plan_when_validated_is_stale(tmp_path):

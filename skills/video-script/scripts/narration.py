@@ -547,7 +547,7 @@ def lint_narration(narration, scenes_analysis=None, *, clip_plan=None, mode="ful
         if spm and spm < min_spm:
             warnings.append(_lint_issue(
                 "warning", None, "low_density",
-                "Narration density is below the continuous-bed target; add more short beats",
+                "Narration density is below the continuous-bed guide; add beats only where they add meaning, never filler",
                 segments_per_minute=round(spm, 2), min_segments_per_minute=min_spm,
                 target_segments_per_minute=target_spm,
             ))
@@ -1309,25 +1309,24 @@ def _parse_target_seconds(value):
 
 
 def _format_research_directive(work_dir, substrate):
-    """A loud, actionable research-first directive when the agent has a title/context but
-    no background_research.json, or when the substrate is too thin to write real commentary.
+    """A loud, actionable research-first directive — but ONLY when the substrate is too thin
+    for real commentary (no dialogue/story spine) and no background_research.json exists yet.
 
-    The narration's quality ceiling is how much story context the agent has: with only
-    frame descriptions it can only narrate pixels. This pushes the agent to research the
-    title first (see references/research-guide.md) instead of silently writing 看图说话.
+    The narration's quality ceiling is how much story context the agent has: with only frame
+    descriptions it can only narrate pixels, so research the title FIRST (see
+    references/research-guide.md). Fires only for thin/empty substrate — NOT merely because a
+    title was given — so a dialogue-rich titled run is never nagged.
     """
     if (Path(work_dir) / "background_research.json").exists():
         return []  # already researched; _format_background_research surfaces it
+    if not (substrate and substrate.get("level") in ("thin", "empty")):
+        return []  # rich enough to write from dialogue/spine; do not nag
     context = str(CONFIG.get("context_info") or "").strip()
-    thin = substrate.get("level") in ("thin", "empty") if substrate else False
-    if not context and not thin:
-        return []
-    why = "the substrate is thin" if thin else "you have a title/context but no background_research.json"
     return [
         "## ⚑ Research the story FIRST (do this before writing narration)",
         "",
-        f"Reason: {why}. Engaging recap commentary (motive, stakes, relationships) needs story",
-        "context the frames alone do not carry — without it the narration can only describe pixels.",
+        "Reason: the understanding substrate is thin — no dialogue/story spine, only frame",
+        "descriptions, so without research the narration can only describe pixels.",
         "1. Pull the title/keywords from `--context`, the filename, or the user's description"
         + (f" (context: {context})." if context else "."),
         "2. Use any available web-search/browser tool to look up synopsis, characters, and",
@@ -1338,6 +1337,32 @@ def _format_research_directive(work_dir, substrate):
         "   the visible ASR/frame evidence rather than inventing drama.",
         "",
     ]
+
+
+def _format_output_clip_list(work_dir):
+    """List the kept clips on the OUTPUT timeline (cut-first/narrate-second pass 2), so the
+    agent narrates against the real rendered cut instead of the source timeline."""
+    path = Path(work_dir) / "clip_plan_validated.json"
+    if not path.exists():
+        return []
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    clips = (plan.get("clips") if isinstance(plan, dict) else plan) or []
+    out = ["## Kept clips on the OUTPUT timeline", ""]
+    for c in clips:
+        if not isinstance(c, dict):
+            continue
+        try:
+            os_, oe = float(c.get("output_start")), float(c.get("output_end"))
+            ss, se = float(c.get("source_start")), float(c.get("source_end"))
+        except (TypeError, ValueError):
+            continue
+        reason = str(c.get("reason", "")).strip()
+        out.append(f"- output {os_:.1f}–{oe:.1f}s ← source {ss:.1f}–{se:.1f}s" + (f" — {reason}" if reason else ""))
+    out.append("")
+    return out if len(out) > 2 else []
 
 
 def build_agent_brief(scenes_analysis, asr_result, silence_periods, video_duration, work_dir, style="纪录片", *, mimo_overview_enabled=None, mimo_overview_video_path=None):
@@ -1387,7 +1412,9 @@ def build_agent_brief(scenes_analysis, asr_result, silence_periods, video_durati
         )
     else:
         lines.append(
-            f"- Narration density target: ~{target_spm:.1f} segments/min (minimum {min_spm:.1f}); no gap longer than {max_gap:.0f}s"
+            f"- Narration density: aim for ~{target_spm:.1f} beats/min for the continuous-bed feel "
+            f"(min ~{min_spm:.1f}, no silent gap over {max_gap:.0f}s) — a GUIDE, not a quota: never pad with "
+            f"filler or pixel-description to hit a number; a meaningful beat beats a filler beat."
         )
     if edit_mode == "cut":
         lines.append(
@@ -1431,43 +1458,47 @@ def build_agent_brief(scenes_analysis, asr_result, silence_periods, video_durati
 
     if edit_mode == "cut":
         cut_target_example = target_duration if target_duration != "(not set)" else "30m"
-        lines.extend([
-            "## Required files for cut mode",
-            "",
-            f"Goal: a ~{output_label} recap cut from a {source_label} source. "
-            "The narration must match the CUT output, not the full source.",
-            "First write `clip_plan.json` to choose source footage, then write `narration.json` using ORIGINAL "
-            "source timestamps that fall INSIDE those clips. The CLI concatenates the clips and maps your source "
-            "timestamps onto the shortened timeline.",
-            "",
-            "Cut-mode authoring rules:",
-            "- Size narration to the OUTPUT: aim for the cut-output beat count above, NOT one beat per source minute. "
-            "A beat whose midpoint lands outside every kept clip is DROPPED.",
-            "- Keep each beat INSIDE one clip: do not let a beat's [start, end] cross a clip boundary, or it is clipped "
-            "to that clip and the voiceover ends up describing footage that was cut away.",
-            "- Tell the story in OUTPUT order: order beats by the order their clips will play so the recap reads as one "
-            "continuous arc over the kept footage.",
-            "- If clips reuse overlapping source ranges, tag the beat with `source_clip_id` so it maps to the intended clip.",
-            "",
-            "### clip_plan.json shape",
-            "",
-            "```json",
-            "{",
-            f"  \"target_duration\": \"{cut_target_example}\",",
-            "  \"clips\": [",
-            "    {\"start\": 12.0, \"end\": 38.0, \"reason\": \"关键冲突开端\"}",
-            "  ]",
-            "}",
-            "```",
-            "",
-            "### narration.json shape (source timestamps inside the kept clips)",
-            "",
-            "```json",
-            "[",
-            "  {\"start\": 14.0, \"end\": 19.0, \"narration\": \"解说文本。\", \"pause_after_ms\": 250, \"overlaps_speech\": true}",
-            "]",
-            "```",
-        ])
+        if not (Path(work_dir) / "edited_source.mp4").exists():
+            # PASS 1 of 2 (cut-first): pick the footage. Narration comes AFTER the cut is
+            # rendered, so it can be written against the real OUTPUT timeline — no source->output
+            # mapping, no silent drop/clamp, no desync.
+            lines.extend([
+                "## Cut mode — step 1 of 2: write `clip_plan.json` ONLY",
+                "",
+                f"Goal: a ~{output_label} recap cut from a {source_label} source. First choose the footage; the CLI",
+                "then renders the cut and asks you to narrate against that real output. Do NOT write narration.json yet.",
+                "Select clips for plot causality, key dialogue, reveals, and emotional turns; avoid filler and repeats.",
+                "",
+                "### clip_plan.json shape (original source timestamps)",
+                "",
+                "```json",
+                "{",
+                f"  \"target_duration\": \"{cut_target_example}\",",
+                "  \"clips\": [",
+                "    {\"start\": 12.0, \"end\": 38.0, \"reason\": \"关键冲突开端\"}",
+                "  ]",
+                "}",
+                "```",
+            ])
+        else:
+            # PASS 2 of 2: the cut is rendered (edited_source.mp4); narrate in OUTPUT time.
+            lines.extend(_format_output_clip_list(work_dir))
+            lines.extend([
+                "## Cut mode — step 2 of 2: write `narration.json` in OUTPUT time",
+                "",
+                f"The cut is rendered as `edited_source.mp4` (~{output_label}). Write narration timed to THAT output",
+                "timeline (0 .. total), NOT the original source — your timestamps play exactly where you put them, with",
+                "no mapping and no dropping. Use the kept-clip OUTPUT ranges above to know what is on screen when, tell",
+                "one continuous arc across the cut, and aim for the density guide in the header.",
+                "",
+                "### narration.json shape (OUTPUT timestamps, 0..total)",
+                "",
+                "```json",
+                "[",
+                "  {\"start\": 2.0, \"end\": 7.0, \"narration\": \"解说文本。\", \"pause_after_ms\": 250, \"overlaps_speech\": true}",
+                "]",
+                "```",
+            ])
     else:
         lines.extend([
             "## Required JSON shape",
