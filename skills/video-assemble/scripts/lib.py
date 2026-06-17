@@ -159,7 +159,7 @@ CONFIG = {
     "mimo_tts_voice_source": "env" if os.environ.get("MIMO_TTS_VOICE") else "default",
     "mimo_tts_style": os.environ.get(
         "MIMO_TTS_STYLE",
-        "自然、清晰、适合中文视频解说；语速中等，情绪克制但有故事感。",
+        "自然、清晰、有感染力，像在给观众讲故事；随剧情起伏，该紧张时紧张、该动情时动情，不平铺直叙。",
     ),
     "mimo_tts_style_source": "env" if os.environ.get("MIMO_TTS_STYLE") else "default",
     "mimo_media_resolution": os.environ.get("MIMO_MEDIA_RESOLUTION", "default"),
@@ -184,7 +184,7 @@ CONFIG = {
     # 生成解说时使用 speech_rate * safety_margin 作为约束
     "speech_rate": 3.5,
     "speech_safety_margin": 0.85,  # 保守系数：TTS 实际语速有 ±20% 波动
-    "fade_ms": 300,  # TTS fade-in/fade-out 时长(ms)
+    "fade_ms": env_int("FADE_MS", 120, minimum=0),  # 每段 TTS 淡入淡出(ms)；过大会让紧凑的句子一顿一顿，120ms 防爆音又不发闷
     "breath_ms": 250,  # 段间呼吸空间(ms)；连续原声铺底风格用短停顿保持节奏
     # 解说密度目标（连续原声铺底的高密度 recap 风格；写入 brief 并由 lint 检查）
     "target_segments_per_minute": 9.6,   # 目标解说密度（段/分钟）
@@ -201,9 +201,9 @@ CONFIG = {
     "ducking_orig_volume": env_float("DUCKING_ORIG_VOLUME", 0.3, minimum=0.0),  # 解说时原声基准音量
     "zone_ducking_volume": 0.12,    # 解说时原声压低到的音量
     "zone_fade_seconds": 0.5,      # 解说/原声切换的淡入淡出时长(秒)
-    "idle_orig_volume": env_float("IDLE_ORIG_VOLUME", 0.85, minimum=0.0),  # 解说间隙(无旁白)时的原声音量，铺底避免顿挫
-    "duck_fade_seconds": env_float("DUCK_FADE_SECONDS", 0.25, minimum=0.0),  # 原声 ducking 过渡淡入淡出(秒)
-    "duck_bridge_seconds": env_float("DUCK_BRIDGE_SECONDS", 12.0, minimum=0.0),  # 相邻解说段间隔小于此值则压低保持连续铺底，不让原声在句间窜起来。默认 12s 略高于 max_narration_gap_seconds(11s)，于是整段解说期间原声都是一条压低的连续铺底，只有片头引入/片尾收束才放回原声；调小可让段落间隙放回原声喘息
+    "idle_orig_volume": env_float("IDLE_ORIG_VOLUME", 1.0, minimum=0.0),  # 解说块之间的"原声块"音量：默认满音量(1.0)，让精彩原声整段放出来，不被压低（用户要求解说成块、原声也成块）
+    "duck_fade_seconds": env_float("DUCK_FADE_SECONDS", 0.3, minimum=0.0),  # 解说块/原声块切换的淡入淡出(秒)，略放宽到 0.3 让满音量↔压低的过渡更顺
+    "duck_bridge_seconds": env_float("DUCK_BRIDGE_SECONDS", 1.5, minimum=0.0),  # 仅把间隔小于此值的相邻解说窗口并成一段压低；超过则视为作者特意留的"原声块"，原声放回满音量。默认 1.5s：解说块内部连续压低，块与块之间的留白放出满音量原声（约 7:3 的解说/原声节奏）。调大→更连续铺底、原声块更少；调小→更碎
     "bgm_path": os.environ.get("BGM_PATH", "").strip(),  # 背景音乐文件(可选)，留空则不加 BGM
     "source_video": os.environ.get("SOURCE_VIDEO", "").strip(),  # 剪辑模式下的原始视频(可选)，用于时间线/剪映导出引用原片片段
     "export_jianying": env_bool("EXPORT_JIANYING", False),  # 渲染后可选导出剪映草稿(默认关；与核心解耦)
@@ -211,10 +211,14 @@ CONFIG = {
     "jianying_bundle_media": env_bool("JIANYING_BUNDLE_MEDIA", True),  # 默认开：macOS 剪映沙箱读不到外部路径，须把素材拷进草稿目录
     "bgm_volume": env_float("BGM_VOLUME", 0.18, minimum=0.0),  # BGM 铺底音量
     "bgm_ducking_volume": env_float("BGM_DUCKING_VOLUME", 0.10, minimum=0.0),  # 旁白时 BGM 压低到的音量
-    "narration_speed": env_float("NARRATION_SPEED", 1.2, minimum=0.5),  # 解说整体提速(atempo)，默认偏快适配短视频；长片可设 1.0
+    "narration_speed": env_float("NARRATION_SPEED", 1.3, minimum=0.5),  # 解说整体提速(atempo)，默认偏快适配短视频；长片可设 1.0
     "mask_source_subtitles": env_bool("MASK_SOURCE_SUBTITLES", True),  # 遮挡原片烧录字幕（默认开；无烧录字幕素材设 false）
     "source_subtitle_mask_ratio": env_float("SOURCE_SUBTITLE_MASK_RATIO", 0.14, minimum=0.0),  # 底部遮挡比例
-    "narration_delay_seconds": 1.5,  # 解说延迟放置秒数，让画面先出现再解说
+    "narration_delay_seconds": 1.5,  # 解说延迟放置秒数，让画面先出现再解说（仅用于段落起点）
+    "narration_tighten": env_bool("NARRATION_TIGHTEN", True),  # 段落内把句子紧贴上一句实际收尾播放，句间间隔稳定≤tight_pause，杜绝"一句解说一段空白"的卡顿
+    "narration_run_gap_seconds": env_float("NARRATION_RUN_GAP_SECONDS", 1.6, minimum=0.0),  # 作者留白超过此值=新段落（让精彩原声透出）；小于则视为同一连续段落
+    "narration_tight_pause_seconds": env_float("NARRATION_TIGHT_PAUSE_SECONDS", 0.35, minimum=0.0),  # 段落内句间固定间隔(秒)
+    "narration_max_pull_seconds": env_float("NARRATION_MAX_PULL_SECONDS", 1.2, minimum=0.0),  # 收紧时一句最多比作者标注提前的秒数（漂移上限，越小越贴画面）
     "narration_tail_pad_seconds": 0.1,  # 解说尾部最少留白；短 slot 会自动压低 delay 避免截断
     "quiet_overlap_min_ratio": 0.8,  # 解说段至少多少比例落在安静窗口内才标记为非对白重叠
     "visual_beat_max_seconds": 18.0,  # 单段解说超过该时长且跨多个帧锚点时给 lint 提醒
@@ -249,7 +253,7 @@ CONFIG = {
     "clip_padding": env_float("CLIP_PADDING", 0.0, minimum=0.0),  # cut 模式片段两端扩展秒数
     "clip_padding_source": "env" if os.environ.get("CLIP_PADDING") else "default",
     "allow_clip_overlap": env_bool("ALLOW_CLIP_OVERLAP", False),  # cut 模式是否允许重复/重叠使用原片
-    "burn_subtitles": False,  # 烧录字幕到视频（需要重编码）
+    "burn_subtitles": env_bool("BURN_SUBTITLES", True),  # 烧录解说字幕（默认开；遮挡原字幕后需自带字幕，否则字幕区空白）
     "force_video_reencode": env_bool("FORCE_VIDEO_REENCODE", False),  # 组装时重编码视频，修复部分容器时间戳问题
     # 成片末端整体响度归一（默认混音偏轻，归一后更接近常见短视频响度；样片约 -11.9，默认取更安全的 -14）
     "final_loudnorm": env_bool("FINAL_LOUDNORM", True),  # 组装末端做一次整体响度归一

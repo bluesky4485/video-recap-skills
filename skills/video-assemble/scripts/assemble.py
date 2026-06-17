@@ -8,7 +8,7 @@ from lib import CONFIG
 from lib import log, run_cmd, get_video_duration
 from timeline import build_timeline, save_timeline
 
-SUBTITLE_RENDER_VERSION = 1
+SUBTITLE_RENDER_VERSION = 2
 ASSEMBLY_MANIFEST = "assembly_manifest.json"
 
 
@@ -249,7 +249,7 @@ def _subtitle_style_config():
         "alignment": CONFIG.get("subtitle_alignment", 2),
         "margin_l": CONFIG.get("subtitle_margin_l", 40),
         "margin_r": CONFIG.get("subtitle_margin_r", 40),
-        "margin_v": CONFIG.get("subtitle_margin_v", 48),
+        "margin_v": CONFIG.get("subtitle_margin_v", 30),
         "max_chars": CONFIG.get("subtitle_max_chars", 20),
         "play_res_x": CONFIG.get("subtitle_play_res_x", 1280),
         "play_res_y": CONFIG.get("subtitle_play_res_y", 720),
@@ -269,16 +269,16 @@ def assembly_settings_fingerprint():
         "narration_timing": {
             "delay_seconds": CONFIG.get("narration_delay_seconds", 1.5),
             "tail_pad_seconds": CONFIG.get("narration_tail_pad_seconds", 0.1),
-            "fade_ms": CONFIG.get("fade_ms", 300),
+            "fade_ms": CONFIG.get("fade_ms", 120),
             "narration_speed": CONFIG.get("narration_speed", 1.0),
         },
         "audio_mix": {
             "ducking_mode": CONFIG.get("ducking_mode", "fixed"),
-            "duck_fade_seconds": CONFIG.get("duck_fade_seconds", 0.25),
-            "duck_bridge_seconds": CONFIG.get("duck_bridge_seconds", 12.0),
+            "duck_fade_seconds": CONFIG.get("duck_fade_seconds", 0.3),
+            "duck_bridge_seconds": CONFIG.get("duck_bridge_seconds", 1.5),
             "ducking_narr_weight": CONFIG.get("ducking_narr_weight", 1.5),
-            "ducking_orig_volume": CONFIG.get("ducking_orig_volume", 0.5),
-            "idle_orig_volume": CONFIG.get("idle_orig_volume", 0.85),
+            "ducking_orig_volume": CONFIG.get("ducking_orig_volume", 0.3),
+            "idle_orig_volume": CONFIG.get("idle_orig_volume", 1.0),
             "speech_ducking_volume": CONFIG.get("speech_ducking_volume", 0.2),
             "zone_ducking_volume": CONFIG.get("zone_ducking_volume", 0.12),
             "ducking_threshold": CONFIG.get("ducking_threshold", 0.15),
@@ -300,31 +300,79 @@ def assembly_settings_fingerprint():
 
 
 def _wrap_subtitle_text(text, max_chars=20, line_break="\n"):
-    """将长文本按标点/字数换行，适配字幕显示"""
+    """把过长字幕折成均衡的两行：在最接近中点的标点处断开，标点跟在上一行末尾，
+    绝不让结尾的句号/逗号单独掉到第二行（之前的强制断行会孤立标点、两行严重失衡）。
+
+    遗留工具：现在字幕由 _subtitle_entries / _split_subtitle_chunks 拆成短的单行块，烧录链路
+    不再调用本函数；保留仅作单元测试与兜底。"""
+    text = text.strip()
     if len(text) <= max_chars:
         return text
-    # 优先在标点处断行
-    lines = []
-    current = ""
+    puncts = "，。！？、；：…—,.!?;:"
+    mid = len(text) / 2
+    # 候选断点 = 标点之后的位置（标点留在上一行）；排除最后一个字符，避免孤立结尾标点
+    best = None
+    for i, ch in enumerate(text[:-1]):
+        if ch in puncts:
+            cut = i + 1
+            if best is None or abs(cut - mid) < abs(best - mid):
+                best = cut
+    if best is None:                       # 没有可用标点 → 从中点附近断开
+        best = int(round(mid))
+    line1, line2 = text[:best].strip(), text[best:].strip()
+    if not line1 or not line2:             # 退化情形 → 保持一行，不强行制造孤行
+        return text
+    return line_break.join([line1, line2])
+
+
+def _split_subtitle_chunks(text, max_chars):
+    """Split one narration block (often several sentences) into short display chunks.
+
+    A block is synthesized as one continuous TTS utterance for fluent prosody, but showing the
+    whole paragraph as a single subtitle would force a tall multi-line band and lag the picture.
+    So we cut the block at punctuation into clauses, then greedily pack adjacent clauses into
+    chunks of at most `max_chars` — each chunk renders as ONE readable line synced to its slice of
+    the block's audio. Punctuation stays attached to its clause; we never orphan a lone mark."""
+    text = str(text).strip()
+    if not text:
+        return []
+    breakers = "，。！？、；：…—,.!?;:"
+    clauses, buf = [], ""
     for ch in text:
-        current += ch
-        if ch in "，。！？、；：—" and len(current) >= max_chars * 0.6:
-            lines.append(current)
-            current = ""
-        elif len(current) >= max_chars + 5:
-            # 强制断行
-            lines.append(current)
-            current = ""
-    if current:
-        lines.append(current)
-    # SRT 最多两行
-    if len(lines) > 2:
-        lines = [lines[0], "".join(lines[1:])]
-    return line_break.join(lines)
+        buf += ch
+        if ch in breakers:
+            clauses.append(buf)
+            buf = ""
+    if buf.strip():
+        clauses.append(buf)
+    # Any single clause longer than max_chars is hard-wrapped so no chunk ever exceeds one line.
+    sized = []
+    for clause in clauses:
+        if len(clause) <= max_chars:
+            sized.append(clause)
+        else:
+            for i in range(0, len(clause), max_chars):
+                sized.append(clause[i:i + max_chars])
+    chunks, cur = [], ""
+    for clause in sized:
+        if cur and len(cur) + len(clause) > max_chars:
+            chunks.append(cur)
+            cur = clause
+        else:
+            cur += clause
+    if cur.strip():
+        chunks.append(cur)
+    return [c.strip() for c in chunks if c.strip()]
 
 
 def _subtitle_entries(narration):
-    """Collect subtitle entries from final TTS segment placement."""
+    """Collect subtitle entries from final TTS segment placement.
+
+    Each placed segment is split into short one-line chunks and its played window
+    [actual_place_start, actual_place_end] is distributed across them in proportion to character
+    count — karaoke-style timing that keeps each line on screen only while it is roughly being
+    spoken, instead of holding a whole paragraph for the segment's full duration."""
+    max_chars = int(CONFIG.get("subtitle_max_chars", 20))
     entries = []
     for seg in narration:
         if not isinstance(seg, dict):
@@ -339,20 +387,38 @@ def _subtitle_entries(narration):
             continue
         if end - start < 0.1:
             continue
-        entries.append({"start": start, "end": end, "text": text})
+        chunks = _split_subtitle_chunks(text, max_chars)
+        if not chunks:
+            continue
+        if len(chunks) == 1:
+            entries.append({"start": start, "end": end, "text": chunks[0]})
+            continue
+        total_chars = sum(len(c) for c in chunks) or 1
+        span = end - start
+        cursor = start
+        for i, chunk in enumerate(chunks):
+            chunk_end = end if i == len(chunks) - 1 else cursor + span * (len(chunk) / total_chars)
+            if i > 0 and chunk_end - cursor < 0.05:
+                # slice too short to show on its own — fold the text into the previous line of THIS
+                # block (i>0) and extend its end, so no chunk is ever silently dropped.
+                entries[-1]["text"] += chunk
+                entries[-1]["end"] = chunk_end
+            else:
+                entries.append({"start": cursor, "end": chunk_end, "text": chunk})
+            cursor = chunk_end
     return entries
 
 
 def _generate_srt(narration, work_dir):
     """将解说脚本转为 SRT 字幕文件，使用实际音频放置时间"""
     srt_lines = []
-    max_chars = int(CONFIG.get("subtitle_max_chars", 20))
+    # entries are already split into short one-line chunks by _subtitle_entries, so no wrapping here.
     for idx, entry in enumerate(_subtitle_entries(narration), start=1):
         start_ts = _seconds_to_srt_time(entry["start"])
         end_ts = _seconds_to_srt_time(entry["end"])
         srt_lines.append(str(idx))
         srt_lines.append(f"{start_ts} --> {end_ts}")
-        srt_lines.append(_wrap_subtitle_text(entry["text"], max_chars=max_chars))
+        srt_lines.append(entry["text"])
         srt_lines.append("")
     srt_path = work_dir / "subtitles.srt"
     srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
@@ -401,9 +467,9 @@ def _generate_ass(narration, work_dir):
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    max_chars = int(style["max_chars"])
+    # entries are already split into short one-line chunks by _subtitle_entries, so no wrapping here.
     for entry in _subtitle_entries(narration):
-        text = _wrap_subtitle_text(_escape_ass_text(entry["text"]), max_chars=max_chars, line_break="\\N")
+        text = _escape_ass_text(entry["text"])
         ass_lines.append(
             "Dialogue: 0,"
             f"{_seconds_to_ass_time(entry['start'])},{_seconds_to_ass_time(entry['end'])},"
@@ -486,6 +552,17 @@ def _source_subtitle_mask_filter():
     if not CONFIG.get("mask_source_subtitles", False):
         return None
     ratio = max(0.0, min(0.5, float(CONFIG.get("source_subtitle_mask_ratio", 0.14) or 0.0)))
+    # When we burn our OWN subtitle the band must sit behind it, but our subtitles are split into
+    # short ONE-LINE chunks (see _subtitle_entries), so the band only needs to cover a single line
+    # plus its bottom margin — never two. Sizing for one line keeps the black bar small so it does
+    # not compress the picture (a 2-line band ate ~23% of the height). Take the larger of the raw
+    # ratio and this single-line need.
+    if CONFIG.get("burn_subtitles", False):
+        style = _subtitle_style_config()
+        play_res_y = max(1.0, float(style["play_res_y"]))
+        line_h = float(style["font_size"]) * 1.25
+        sub_band = (float(style["margin_v"]) + line_h + 10.0) / play_res_y
+        ratio = min(0.5, max(ratio, sub_band))
     if ratio <= 0:
         return None
     return f"drawbox=x=0:y=ih-ih*{ratio:.3f}:w=iw:h=ih*{ratio:.3f}:color=black@1.0:t=fill"
@@ -825,11 +902,24 @@ def _build_timed_narration(tts_segments, output_wav, video_duration, work_dir):
     last_written_end = 0  # 追踪已写入位置，防止重叠
     prev_pause_samples = 0  # 前一段的 pause_after_ms，控制段间间隔
     skipped_count = 0  # 因 WAV 缺失/损坏/重采样失败而被跳过的段数
-    placed_count = 0  # 真正写入音频的段数；防止“成功”生成全静音旁白
+    placed_count = 0  # 真正写入音频的段数；防止"成功"生成全静音旁白
+    prev_authored_end = None  # 上一段作者标注的结束时间，用于判断"段落"边界
+    run_gap = float(CONFIG.get("narration_run_gap_seconds", 1.6))   # 作者留白 > 此值 = 新段落
+    tighten = bool(CONFIG.get("narration_tighten", True))
+    tight_pause_samples = int(max(0.0, float(CONFIG.get("narration_tight_pause_seconds", 0.35))) * sample_rate)
+    # 漂移上限：收紧时一句最多比作者标注的时间提前 max_pull 秒，避免整段解说被全部压到前面、与画面脱节
+    max_pull_samples = int(max(0.0, float(CONFIG.get("narration_max_pull_seconds", 2.5))) * sample_rate)
 
     for seg in tts_segments:
         wav_path = seg["audio_path"]
         seg_pause_ms = seg.get("pause_after_ms", CONFIG.get("breath_ms", 250))
+        # 段落收紧：同一段落内（与上一句作者留白 <= run_gap）把这一句紧贴上一句的实际收尾播放，
+        # 句间间隔固定为 tight_pause，不受 slot 内居中延迟 / TTS 时长波动影响。段落之间（作者特意留
+        # 的大留白，让精彩原声透出）才放回原声。这样句间间隔稳定、不会出现"一句解说一段空白"。
+        cur_authored_start = float(seg.get("start", 0.0))
+        is_run_start = (placed_count == 0 or prev_authored_end is None
+                        or cur_authored_start - prev_authored_end > run_gap)
+        prev_authored_end = float(seg.get("end", cur_authored_start))
 
         if not os.path.exists(wav_path):
             seg["actual_place_start"] = seg["start"]
@@ -874,9 +964,15 @@ def _build_timed_narration(tts_segments, output_wav, video_duration, work_dir):
         end_boundary = int(min(seg["end"], video_duration) * sample_rate)
 
         # 段间间隔：使用前一段的 pause_after_ms（来自 narration.json）
-        # 第一段无延迟，后续段在前段结束后等待前段的 pause
         min_start_with_pause = last_written_end + prev_pause_samples
-        actual_start = max(start_sample, min_start_with_pause)
+        if tighten and not is_run_start:
+            # 段落内：紧贴上一句的实际收尾播放，句间间隔固定为 tight_pause（不被 slot 内居中延迟撑大），
+            # 但不早于"作者标注起始 - max_pull"，防止整段被压到前面与画面脱节。
+            drift_floor = int(cur_authored_start * sample_rate) - max_pull_samples
+            actual_start = max(last_written_end + tight_pause_samples, drift_floor)
+        else:
+            # 段落起点（或关闭收紧）：尊重作者标注的起始 + 入场延迟，让画面/原声先立住
+            actual_start = max(start_sample, min_start_with_pause)
         actual_start = min(actual_start, end_boundary)  # 不超出 slot 边界
 
         # 根据实际可用空间决定是否加速
@@ -991,7 +1087,8 @@ def main():
     ap.add_argument("--tts-meta", default=None, help="tts_meta.json (default: <work-dir>/tts_meta.json)")
     ap.add_argument("--recap-stem", default=None, help="final recap filename stem (default: video stem)")
     ap.add_argument("--output-dir", default=None)
-    ap.add_argument("--burn-subtitles", action="store_true")
+    ap.add_argument("--burn-subtitles", action=argparse.BooleanOptionalAction, default=None,
+                    help="burn narration subtitles into the video (default on; --no-burn-subtitles to disable)")
     ap.add_argument("--source-video", default=None,
                     help="original source video (cut mode) so timeline.json / 剪映 export reference the real clips")
     ap.add_argument("--export-jianying", action="store_true",
@@ -1003,8 +1100,8 @@ def main():
                     help="do NOT copy media into the draft — reference in place (only if 剪映 can read those paths; macOS 剪映 usually cannot)")
     args = ap.parse_args()
     work_dir = Path(args.work_dir)
-    if args.burn_subtitles:
-        CONFIG["burn_subtitles"] = True
+    if args.burn_subtitles is not None:
+        CONFIG["burn_subtitles"] = args.burn_subtitles
     if args.source_video:
         CONFIG["source_video"] = args.source_video
         CONFIG["source_video_explicit"] = True

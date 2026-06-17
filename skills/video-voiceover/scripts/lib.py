@@ -168,7 +168,7 @@ CONFIG = {
     "mimo_tts_voice_source": "env" if os.environ.get("MIMO_TTS_VOICE") else "default",
     "mimo_tts_style": os.environ.get(
         "MIMO_TTS_STYLE",
-        "自然、清晰、适合中文视频解说；语速中等，情绪克制但有故事感。",
+        "自然、清晰、有感染力，像在给观众讲故事；随剧情起伏，该紧张时紧张、该动情时动情，不平铺直叙。",
     ),
     "mimo_tts_style_source": "env" if os.environ.get("MIMO_TTS_STYLE") else "default",
     "mimo_media_resolution": os.environ.get("MIMO_MEDIA_RESOLUTION", "default"),
@@ -219,7 +219,7 @@ CONFIG = {
     "jianying_bundle_media": env_bool("JIANYING_BUNDLE_MEDIA", True),  # 默认开：macOS 剪映沙箱读不到外部路径，须把素材拷进草稿目录
     "bgm_volume": env_float("BGM_VOLUME", 0.18, minimum=0.0),  # BGM 铺底音量
     "bgm_ducking_volume": env_float("BGM_DUCKING_VOLUME", 0.10, minimum=0.0),  # 旁白时 BGM 压低到的音量
-    "narration_speed": env_float("NARRATION_SPEED", 1.2, minimum=0.5),  # 解说整体提速(atempo)，默认偏快适配短视频；长片可设 1.0
+    "narration_speed": env_float("NARRATION_SPEED", 1.3, minimum=0.5),  # 解说整体提速(atempo)，默认偏快适配短视频；长片可设 1.0
     "mask_source_subtitles": env_bool("MASK_SOURCE_SUBTITLES", True),  # 遮挡原片烧录字幕（默认开；无烧录字幕素材设 false）
     "source_subtitle_mask_ratio": env_float("SOURCE_SUBTITLE_MASK_RATIO", 0.14, minimum=0.0),  # 底部遮挡比例
     "narration_delay_seconds": 1.5,  # 解说延迟放置秒数，让画面先出现再解说
@@ -257,7 +257,7 @@ CONFIG = {
     "clip_padding": env_float("CLIP_PADDING", 0.0, minimum=0.0),  # cut 模式片段两端扩展秒数
     "clip_padding_source": "env" if os.environ.get("CLIP_PADDING") else "default",
     "allow_clip_overlap": env_bool("ALLOW_CLIP_OVERLAP", False),  # cut 模式是否允许重复/重叠使用原片
-    "burn_subtitles": False,  # 烧录字幕到视频（需要重编码）
+    "burn_subtitles": env_bool("BURN_SUBTITLES", True),  # 烧录解说字幕（默认开；遮挡原字幕后需自带字幕，否则字幕区空白）
     "force_video_reencode": env_bool("FORCE_VIDEO_REENCODE", False),  # 组装时重编码视频，修复部分容器时间戳问题
     # 成片末端整体响度归一（默认混音偏轻，归一后更接近常见短视频响度；样片约 -11.9，默认取更安全的 -14）
     "final_loudnorm": env_bool("FINAL_LOUDNORM", True),  # 组装末端做一次整体响度归一
@@ -403,7 +403,7 @@ def _mimo_endpoint(kind):
         "api_key_source": CONFIG.get(src_key, "MIMO_API_KEY"),
     }
 
-def _call_mimo_endpoint(kind, payload, max_retries=5):
+def _call_mimo_endpoint(kind, payload, max_retries=10):
     settings = _mimo_endpoint(kind)
     return api_call(
         payload,
@@ -414,20 +414,24 @@ def _call_mimo_endpoint(kind, payload, max_retries=5):
         api_key_source=settings["api_key_source"],
     )
 
-def mimo_video_api_call(payload, max_retries=5):
+def mimo_video_api_call(payload, max_retries=10):
     """Call the MiMo video-understanding endpoint."""
     return _call_mimo_endpoint("video", payload, max_retries=max_retries)
 
-def mimo_tts_api_call(payload, max_retries=5):
+def mimo_tts_api_call(payload, max_retries=10):
     """Call the MiMo TTS endpoint."""
     return _call_mimo_endpoint("tts", payload, max_retries=max_retries)
 
-def mimo_asr_api_call(payload, max_retries=5):
+def mimo_asr_api_call(payload, max_retries=10):
     """Call the MiMo speech-recognition (ASR) endpoint."""
     return _call_mimo_endpoint("asr", payload, max_retries=max_retries)
 
-def api_call(payload, max_retries=5, *, api_provider=None, api_url=None, api_key=None, api_key_source=None):
-    """调用 OpenAI-compatible API，带重试"""
+def api_call(payload, max_retries=8, *, api_provider=None, api_url=None, api_key=None, api_key_source=None):
+    """调用 OpenAI-compatible API，带重试。
+
+    集群的 429 限流是常态而非错误，所以重试更耐心（更多次数 + 退避封顶 60s + 遵从 Retry-After），
+    避免一次瞬时限流就中止整个阶段。配额窗口常以分钟计，所以 429 在没有 Retry-After 时也至少等 10s。
+    """
     endpoint = normalize_api_url(api_url if api_url is not None else CONFIG["api_url"])
     headers = _api_headers(api_provider=api_provider, api_url=endpoint, api_key=api_key)
     data = json.dumps(_prepare_api_payload(payload, api_provider=api_provider, api_url=endpoint)).encode("utf-8")
@@ -440,10 +444,10 @@ def api_call(payload, max_retries=5, *, api_provider=None, api_url=None, api_key
                 return result
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:500]
-            wait = 2 ** attempt
+            wait = min(2 ** attempt, 60)
             if e.code == 429:
                 retry_after = e.headers.get("Retry-After")
-                wait = _retry_after_seconds(retry_after, wait)
+                wait = _retry_after_seconds(retry_after, max(wait, 10))
                 log(f"API 速率限制 (尝试 {attempt+1}/{max_retries}), 等待 {wait}s")
             elif e.code == 401:
                 key_name = api_key_source or CONFIG.get("api_key_source", "MIMO_API_KEY")
@@ -470,7 +474,7 @@ def api_call(payload, max_retries=5, *, api_provider=None, api_url=None, api_key
             else:
                 raise RuntimeError(f"API 调用失败 {max_retries} 次: HTTP {e.code} — {body}")
         except (urllib.error.URLError, Exception) as e:
-            wait = 2 ** attempt
+            wait = min(2 ** attempt, 60)
             log(f"API 调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 log(f"等待 {wait}s 后重试...")

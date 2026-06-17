@@ -36,7 +36,7 @@ def test_synthesize_segment_reuses_only_matching_cache(monkeypatch, tmp_path):
     tts_dir.mkdir()
     calls = []
 
-    def fake_run_tts(engine, text, output_wav, rate="+0%", pitch="+0Hz"):
+    def fake_run_tts(engine, text, output_wav, rate="+0%", pitch="+0Hz", emotion=None):
         calls.append(text)
         output_wav.write_bytes(f"audio:{text}".encode("utf-8"))
 
@@ -60,13 +60,49 @@ def test_synthesize_segment_reuses_only_matching_cache(monkeypatch, tmp_path):
     assert (tts_dir / "narr_000.wav").read_text(encoding="utf-8") == "audio:第二版。"
 
 
+def test_synthesize_segment_block_truncation_accounts_for_narration_speed(monkeypatch, tmp_path):
+    # assemble speeds every segment up by narration_speed before placement, so the slot holds
+    # raw_dur / narration_speed. A block whose RAW tts overflows the slot but fits after the 1.3x
+    # speedup must NOT be truncated; only a block that overflows even then is trimmed.
+    monkeypatch.setitem(CONFIG, "tts_dynamic_params", False)
+    monkeypatch.setitem(CONFIG, "narration_speed", 1.3)
+    monkeypatch.setitem(CONFIG, "mimo_tts_model", "mimo-v2.5-tts")
+    calls = []
+
+    def fake_run_tts(engine, text, output_wav, rate="+0%", pitch="+0Hz", emotion=None):
+        calls.append(text)
+        output_wav.write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr("voiceover._run_tts_engine", fake_run_tts)
+    monkeypatch.setattr("voiceover._get_audio_duration",
+                        lambda p: len(Path(p).read_text(encoding="utf-8")) * 0.3 if Path(p).exists() else 0.0)
+    tts_dir = tmp_path / "tts_segments"
+    tts_dir.mkdir()
+
+    # slot 12s, pause 0.2s -> available 11.8s; raw budget = 11.8 * 1.3 * 1.2 ≈ 18.4s.
+    # 50-char block -> raw 15s: over the old 14.2s (available*1.2) budget, but fits the speed-aware one.
+    block = "情节推进。" * 10
+    res = _synthesize_segment(0, {"start": 0.0, "end": 12.0, "narration": block, "pause_after_ms": 200},
+                              [block], tts_dir, "mimo-tts")
+    assert calls == [block]                       # exactly one TTS call -> NOT truncated
+    assert res["narration"] == block
+
+    # 100-char block -> raw 30s: overflows even after the speedup -> still truncated (two calls).
+    calls.clear()
+    huge = "情节推进。" * 20
+    res2 = _synthesize_segment(1, {"start": 0.0, "end": 12.0, "narration": huge, "pause_after_ms": 200},
+                               [huge], tts_dir, "mimo-tts")
+    assert len(calls) == 2                         # re-synthesized after truncation
+    assert len(res2["narration"]) < len(huge)
+
+
 def test_synthesize_segment_rejects_cache_when_wav_bytes_change(monkeypatch, tmp_path):
     narration = [{"start": 0.0, "end": 2.0, "narration": "第一版。"}]
     tts_dir = tmp_path / "tts_segments"
     tts_dir.mkdir()
     calls = []
 
-    def fake_run_tts(engine, text, output_wav, rate="+0%", pitch="+0Hz"):
+    def fake_run_tts(engine, text, output_wav, rate="+0%", pitch="+0Hz", emotion=None):
         calls.append(text)
         output_wav.write_bytes(f"audio:{text}:call{len(calls)}".encode("utf-8"))
 
@@ -294,6 +330,33 @@ def test_mimo_tts_writes_decoded_audio(monkeypatch, tmp_path):
     assert payload["audio"] == {"format": "wav", "voice": "冰糖"}
     assert payload["messages"][1] == {"role": "assistant", "content": "这是小米 MiMo 配音。"}
     assert "语速略慢" in payload["messages"][0]["content"]
+
+
+def test_mimo_tts_injects_per_beat_emotion(monkeypatch, tmp_path):
+    import base64
+
+    seen = []
+
+    def fake_api_call(payload):
+        seen.append(payload)
+        return {"choices": [{"message": {"audio": {"data": base64.b64encode(b"x").decode("ascii")}}}]}
+
+    monkeypatch.setattr("voiceover.mimo_tts_api_call", fake_api_call)
+    # emotion routed into the user-message instruction (MiMo instruct-TTS)
+    _tts_mimo("就在这一刻，所有人都沉默了。", tmp_path / "e.wav", emotion="紧张 深沉")
+    instruction = seen[0]["messages"][0]["content"]
+    assert "紧张 深沉" in instruction
+    # no emotion -> still an expressive (non-robotic) directive, no leftover tag
+    _tts_mimo("普通解说。", tmp_path / "n.wav")
+    assert "「" not in seen[1]["messages"][0]["content"]
+    assert "有起伏" in seen[1]["messages"][0]["content"]
+
+
+def test_tts_cache_key_changes_with_emotion():
+    base = {"start": 0.0, "end": 2.0, "narration": "测试。"}
+    k_plain = voiceover._tts_segment_cache_key("mimo-tts", 0, base, "测试。", "+0%", "+0Hz")
+    k_emo = voiceover._tts_segment_cache_key("mimo-tts", 0, {**base, "emotion": "悲伤"}, "测试。", "+0%", "+0Hz")
+    assert k_plain != k_emo, "changing a beat's emotion must invalidate its TTS cache"
 
 
 
