@@ -53,6 +53,8 @@ sudo apt install ffmpeg                     # Debian/Ubuntu
 choco install ffmpeg                        # Windows（或 scoop / winget install ffmpeg）
 ```
 
+字幕默认烧进画面，需要带 **libass（`subtitles` 滤镜）** 的 ffmpeg——上面这些包基本都自带。如果你的 ffmpeg 没编 libass，开跑前会立刻报错并提示（也可以加 `--no-burn-subtitles` 只出 `.srt` 外挂字幕）。用 `python3 scripts/recap.py --doctor` 自检。
+
 **③ 配 MiMo API Key**（一个 key 同时驱动 ASR / VLM / TTS，放环境变量、别写进仓库）：
 
 ```bash
@@ -97,7 +99,7 @@ python3 skills/video-recap/scripts/recap.py --doctor
 
 ## 输出
 
-- `recap_<video>.mp4`：成片（固定输出名，每次运行原地覆盖，迭代解说时刷新同一文件）。`subtitles.srt`（加 `--burn-subtitles` 时还有 `subtitles.ass`）
+- `recap_<video>.mp4`：成片（固定输出名，每次运行原地覆盖，迭代解说时刷新同一文件）。`subtitles.srt`（默认烧录字幕，同时产出 `subtitles.ass`；`--no-burn-subtitles` 关闭）
 - `work_dir/narration.json`：解说脚本（`narration_lint.json` 时间诊断、`narration_review.md` 评审意见）
 - `work_dir/agent_narration_brief.md`：给 Agent 的时间和场景 brief
 - `work_dir/vlm_analysis.json` · `asr_result.json` · `silence_periods.json` · `timeline_fusion.json`：理解产物

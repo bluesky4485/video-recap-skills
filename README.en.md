@@ -53,6 +53,8 @@ sudo apt install ffmpeg                     # Debian/Ubuntu
 choco install ffmpeg                        # Windows (or scoop / winget install ffmpeg)
 ```
 
+Subtitles are burned into the picture by default, which needs an ffmpeg built with **libass (the `subtitles` filter)** — the packages above include it in almost all cases. If yours lacks libass, the run fails fast at the start with a clear message (or pass `--no-burn-subtitles` to keep subtitles as a sidecar `.srt`). Run `python3 scripts/recap.py --doctor` to self-check.
+
 **③ Set your MiMo API key** (one key powers ASR / VLM / TTS — keep it in an env var, never in the repo):
 
 ```bash
@@ -97,7 +99,7 @@ python3 skills/video-recap/scripts/recap.py --doctor
 
 ## Output
 
-- `recap_<video>.mp4`: the final recap; a stable output alias overwritten in place on every run, so iterating on the narration refreshes the same file. `subtitles.srt` (plus `subtitles.ass` with `--burn-subtitles`)
+- `recap_<video>.mp4`: the final recap; a stable output alias overwritten in place on every run, so iterating on the narration refreshes the same file. `subtitles.srt` (plus `subtitles.ass`; subtitle burn-in is on by default, `--no-burn-subtitles` to disable)
 - `work_dir/narration.json`: the narration script (`narration_lint.json` timing diagnostics, `narration_review.md` review notes)
 - `work_dir/agent_narration_brief.md`: timing and scene brief for the agent
 - `work_dir/vlm_analysis.json` · `asr_result.json` · `silence_periods.json` · `timeline_fusion.json`: understanding artifacts
