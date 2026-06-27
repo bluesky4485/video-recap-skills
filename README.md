@@ -42,11 +42,14 @@ flowchart LR
 
 ## 安装
 
-**① 装插件**——复制到 claude code：
+**① 装插件**——在 claude code 里添加本仓库为插件市场并安装：
 
 ```text
-安装这个插件：https://github.com/worldwonderer/video-recap-skills
+/plugin marketplace add worldwonderer/video-recap-skills
+/plugin install video-recap-skills@video-recap
 ```
+
+（也可以直接对 claude code 说「安装这个插件：https://github.com/worldwonderer/video-recap-skills」。）
 
 **② 装 ffmpeg**（不用 `pip install`：纯标准库 + `PATH` 上的 `ffmpeg`，Python 3.10+）：
 
@@ -68,6 +71,37 @@ export MIMO_TOKEN_PLAN_CLUSTER=cn
 
 按量付费的 `sk-*` key 默认走 `https://api.xiaomimimo.com/v1`。其它都有默认值；想分别配 key/URL 或改模型、音色、响度、字幕等，可见
 [配置手册](skills/video-recap/references/config-playbook.md)。
+
+## 在其他 Agent 工具里用（opencode / Codex / OpenClaw）
+
+引擎是纯 Python + ffmpeg + 一个 MiMo key，与具体 Agent 无关，所以也能在别的 Agent CLI 里跑。先备齐共同前置：`PATH` 上有 **ffmpeg**、设好 **`MIMO_API_KEY`**、**Python 3.10+**（同上）。
+
+- **Codex CLI**（已验证）——直接读本仓库的 `.claude-plugin/marketplace.json`：
+
+  ```bash
+  codex plugin marketplace add worldwonderer/video-recap-skills
+  codex plugin add video-recap-skills@video-recap
+  ```
+
+  （仓库 push 后可用 `owner/repo` 形式；本地可用 `codex plugin marketplace add ./video-recap-skills`。）
+
+- **OpenClaw**（已验证）——直接导入 Claude 插件包。克隆本仓库后，把参数指向克隆出的目录运行：
+
+  ```bash
+  openclaw plugins install ./video-recap-skills
+  ```
+
+  6 个 skill 会成为原生、可自动触发的技能（`openclaw skills list` 可见）。
+
+- **opencode**（按其文档，未在本机实测）——opencode 自动发现 `.claude/skills` / `.agents/skills` / `.opencode/skills` 下的 skill。克隆本仓库后，把 `skills/` 暴露到其中之一即可：
+
+  ```bash
+  mkdir -p .claude && ln -s ../skills .claude/skills   # macOS / Linux
+  # Windows：先建 .claude\skills 目录，再把 skills\* 复制进去
+  ```
+
+> 各 Agent 跑脚本的工作目录不一定是 skill 目录；每个 `SKILL.md` 顶部的「Running the scripts」说明了如何用绝对路径调起（脚本用 `__file__` 自定位）。
+> **别重复注册**：同一套 skill 经多条发现路径（仓库 `skills/`、`~/.agents/skills` 拷贝、各 Agent 的安装缓存）同时注册，会命名冲突或重复自动触发——只启用一条。
 
 ## 怎么用
 
