@@ -10,6 +10,8 @@ set of tracks — exactly like a cut-tool project:
   - one **narration** audio track: the placed TTS beats;
   - an optional **bgm** audio track: a looped music bed with its own ducking;
   - one **subtitle** (text) track: the narration lines.
+  - optional **image** tracks: local photo overlays with normalized center-origin,
+    Y-up transforms for editable JianYing export.
 
 The canonical ducking semantics live in `audio_automation.py`; ffmpeg
 (`assemble.py`) and this timeline model both derive their automation from that
@@ -19,15 +21,18 @@ times are plain seconds and volumes are plain gains, so any backend can read it.
 """
 
 import json
+from copy import deepcopy
 
 from audio_automation import fixed_ducking_keyframes as ducking_keyframes
 from audio_automation import variable_ducking_keyframes
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def build_timeline(canvas, duration_s, video_clips, narration_segments,
-                   bgm=None, ducking=None, subtitle_segments=None):
+                   bgm=None, ducking=None, subtitle_segments=None,
+                   image_segments=None, resource_packages=None,
+                   style_presets=None, extra_tracks=None):
     """Assemble a Timeline dict from resolved placement data.
 
     canvas: {"width", "height", "fps"}
@@ -70,14 +75,22 @@ def build_timeline(canvas, duration_s, video_clips, narration_segments,
             audio["base_gain"] = round(float(ducking["idle"]), 4)
         else:
             audio["base_gain"] = 1.0
-        video_clip_objs.append({
+        video_clip = {
             "source_path": c["source_path"],
             "source_start": round(float(c["source_start"]), 4),
             "source_end": round(float(c["source_end"]), 4),
             "timeline_start": round(ts, 4),
             "timeline_end": round(te, 4),
             "audio": audio,
-        })
+        }
+        for key in (
+            "chroma", "compound", "flip", "green_background", "lut", "mask",
+            "opacity", "position", "reverse", "reverse_path", "rotation_degrees",
+            "scale", "speed", "transition",
+        ):
+            if key in c:
+                video_clip[key] = deepcopy(c[key])
+        video_clip_objs.append(video_clip)
 
     tracks = [{"kind": "video", "name": "video", "clips": video_clip_objs}]
 
@@ -87,14 +100,17 @@ def build_timeline(canvas, duration_s, video_clips, narration_segments,
         ts, te = float(s["timeline_start"]), float(s["timeline_end"])
         if te <= ts:
             continue
-        narr_segs.append({
+        narration = {
             "source_path": s["source_path"],
             "timeline_start": round(ts, 4),
             "timeline_end": round(te, 4),
             "gain": round(float(s.get("gain", 1.0)), 4),
             "text": s.get("text", ""),
             "overlaps_speech": bool(s.get("overlaps_speech", True)),
-        })
+        }
+        if "speed" in s:
+            narration["speed"] = float(s["speed"])
+        narr_segs.append(narration)
     if narr_segs:
         tracks.append({"kind": "audio", "name": "narration", "role": "narration",
                        "segments": narr_segs})
@@ -130,21 +146,76 @@ def build_timeline(canvas, duration_s, video_clips, narration_segments,
             continue
         if te <= ts:
             continue
-        text_segs.append({
+        text_segment = {
             "text": s.get("text", ""),
             "timeline_start": round(ts, 4),
             "timeline_end": round(te, 4),
-        })
+        }
+        for key in ("flip", "opacity", "position", "rotation_degrees", "scale", "style", "style_id", "words"):
+            if key in s:
+                text_segment[key] = deepcopy(s[key])
+        text_segs.append(text_segment)
     if text_segs:
         tracks.append({"kind": "text", "name": "subtitle", "segments": text_segs})
 
-    return {
+    # --- local image overlays (optional, timeline schema v2)
+    images = []
+    for segment in image_segments or []:
+        if not isinstance(segment, dict) or not segment.get("source_path"):
+            continue
+        try:
+            ts = float(segment["timeline_start"])
+            te = float(segment["timeline_end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if te <= ts:
+            continue
+        scale = segment.get("scale") if isinstance(segment.get("scale"), dict) else {}
+        position = segment.get("position") if isinstance(segment.get("position"), dict) else {}
+        flip = segment.get("flip") if isinstance(segment.get("flip"), dict) else {}
+        image = {
+            "source_path": str(segment["source_path"]),
+            "timeline_start": round(ts, 4),
+            "timeline_end": round(te, 4),
+            "opacity": round(max(0.0, min(1.0, float(segment.get("opacity", 1.0)))), 4),
+            "rotation_degrees": round(float(segment.get("rotation_degrees", 0.0)), 4),
+            "scale": {
+                "x": round(float(scale.get("x", 1.0)), 4),
+                "y": round(float(scale.get("y", 1.0)), 4),
+            },
+            "position": {
+                "x": round(float(position.get("x", 0.0)), 4),
+                "y": round(float(position.get("y", 0.0)), 4),
+            },
+            "flip": {
+                "horizontal": bool(flip.get("horizontal", False)),
+                "vertical": bool(flip.get("vertical", False)),
+            },
+        }
+        for key in ("lut", "mask", "speed", "transition"):
+            if key in segment:
+                image[key] = deepcopy(segment[key])
+        images.append(image)
+    if images:
+        tracks.append({"kind": "image", "name": "image", "segments": images})
+
+    for track in extra_tracks or []:
+        if not isinstance(track, dict):
+            raise TypeError("extra_tracks entries must be objects")
+        tracks.append(deepcopy(track))
+
+    timeline = {
         "schema_version": SCHEMA_VERSION,
         "canvas": {"width": int(canvas["width"]), "height": int(canvas["height"]),
                    "fps": float(canvas.get("fps", 30))},
         "duration": round(float(duration_s), 4),
         "tracks": tracks,
     }
+    if resource_packages:
+        timeline["resource_packages"] = deepcopy(resource_packages)
+    if style_presets:
+        timeline["style_presets"] = deepcopy(style_presets)
+    return timeline
 
 
 def save_timeline(timeline, path):

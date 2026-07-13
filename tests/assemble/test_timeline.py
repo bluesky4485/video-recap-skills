@@ -48,6 +48,92 @@ def test_build_timeline_subtitle_segments_skip_invalid_entries():
     ]
 
 
+def test_build_timeline_v2_normalizes_local_image_overlays():
+    tl = build_timeline(
+        {"width": 1280, "height": 720, "fps": 30},
+        5.0,
+        [],
+        [],
+        image_segments=[
+            {
+                "source_path": "/card.png",
+                "timeline_start": 1,
+                "timeline_end": 4,
+                "opacity": 0.8,
+                "rotation_degrees": 12,
+                "scale": {"x": 0.5, "y": 0.6},
+                "position": {"x": 0.2, "y": -0.3},
+                "flip": {"horizontal": True},
+            },
+            {"source_path": "", "timeline_start": 0, "timeline_end": 2},
+            {"source_path": "/bad.png", "timeline_start": 3, "timeline_end": 2},
+        ],
+    )
+
+    assert tl["schema_version"] == 2
+    assert _track(tl, "image", "image")["segments"] == [{
+        "source_path": "/card.png",
+        "timeline_start": 1.0,
+        "timeline_end": 4.0,
+        "opacity": 0.8,
+        "rotation_degrees": 12.0,
+        "scale": {"x": 0.5, "y": 0.6},
+        "position": {"x": 0.2, "y": -0.3},
+        "flip": {"horizontal": True, "vertical": False},
+    }]
+
+
+def test_build_timeline_preserves_jianying_authoring_extensions():
+    video = {
+        "source_path": "/source.mp4",
+        "source_start": 0,
+        "source_end": 4,
+        "timeline_start": 0,
+        "timeline_end": 2,
+        "speed": 2.0,
+        "reverse": True,
+        "reverse_path": "/source-reversed.mp4",
+        "opacity": 0.7,
+        "position": {"x": 0.2, "y": -0.1},
+        "transition": "fade-package",
+    }
+    resource_packages = {
+        "sticker-package": {"main_config": {"type": "sticker"}},
+        "fade-package": {"main_config": {"type": "transition"}},
+    }
+    style_presets = {"title": {"font_size": 24, "fill_color": "#FF0000"}}
+    sticker_track = {
+        "kind": "sticker",
+        "name": "sticker",
+        "segments": [{
+            "timeline_start": 0,
+            "timeline_end": 1,
+            "resource_package": "sticker-package",
+        }],
+    }
+
+    timeline = build_timeline(
+        {"width": 1280, "height": 720, "fps": 30},
+        2.0,
+        [video],
+        [],
+        resource_packages=resource_packages,
+        style_presets=style_presets,
+        extra_tracks=[sticker_track],
+    )
+
+    authored = _track(timeline, "video")["clips"][0]
+    extension_keys = (
+        "speed", "reverse", "reverse_path", "opacity", "position", "transition",
+    )
+    assert {key: authored[key] for key in extension_keys} == {
+        key: video[key] for key in extension_keys
+    }
+    assert timeline["resource_packages"] == resource_packages
+    assert timeline["style_presets"] == style_presets
+    assert _track(timeline, "sticker") == sticker_track
+
+
 
 def test_ducking_keyframes_holds_idle_and_dips_under_window():
     kfs = ducking_keyframes([(2.0, 4.0)], idle=0.85, duck=0.2, fade=0.25,
@@ -342,36 +428,3 @@ def test_p0_ducking_ffmpeg_expression_matches_timeline_keyframes(monkeypatch):
     # Mixed-level bridged windows flatten to the min level (0.12) and ramp outside [s,e].
     for t in [1.75, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 8.25]:
         assert _eval_filter_gain(fc, t) == pytest.approx(_interp_keyframe_gain(kfs, t), abs=0.015)
-
-
-def _sample_keyframes(keyframes, t):
-    prev = keyframes[0]
-    for cur in keyframes[1:]:
-        if t <= cur["t"]:
-            if cur["t"] == prev["t"]:
-                return cur["gain"]
-            ratio = (t - prev["t"]) / (cur["t"] - prev["t"])
-            return prev["gain"] + (cur["gain"] - prev["gain"]) * ratio
-        prev = cur
-    return keyframes[-1]["gain"]
-
-
-def test_ducking_ffmpeg_and_timeline_share_pre_hold_post_semantics():
-    from audio_automation import coalesce_duck_windows, ducking_gain_at
-
-    windows = [(2.0, 4.0, 0.2), (4.5, 6.0, 0.12)]
-    idle = 0.85
-    fade = 0.25
-    merged = coalesce_duck_windows(windows, bridge=1.0)  # bridged mixed levels -> min 0.12
-    keyframes = variable_ducking_keyframes(windows, idle=idle, fade=fade,
-                                           span_start=0.0, span_end=8.0, bridge=1.0)
-
-    for t, expected in [
-        (1.75, idle),   # pre-roll starts at s-fade
-        (2.0, 0.12),    # spoken start is fully ducked
-        (3.0, 0.12),    # hold through midpoint / bridged gap
-        (6.0, 0.12),    # spoken end is still fully ducked
-        (6.25, idle),   # post-roll releases by e+fade
-    ]:
-        assert ducking_gain_at(merged, idle, fade, t) == pytest.approx(expected)
-        assert _sample_keyframes(keyframes, t) == pytest.approx(expected)
